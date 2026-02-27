@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import {
   generateResponseDocument,
   generateCandidateProfile,
-  getDocumentHistory,
+  getDocumentHistory,downloadDocumentController
 } from "../controllers/document.controller.js";
 
 import { authMiddleware } from "../middlewares/auth.middleware.js";
@@ -19,5 +19,6 @@ router.post("/generate-profile",  authMiddleware, adminOnly, generateCandidatePr
 
 // Historique des documents générés
 router.get("/history", authMiddleware, adminOnly, getDocumentHistory);
+router.get("/:id/download", authMiddleware, adminOnly, downloadDocumentController);
 
 export default router;
