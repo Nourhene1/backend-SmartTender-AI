@@ -1,931 +1,620 @@
+// src/controllers/candidature.controller.js
+// ✅ REFACTO COMPLET: Fini les jobs — candidats postulent aux TENDERS uniquement
+// Collection: tender_applications (au lieu de candidatures)
+
 import fs from "node:fs/promises";
-import { ObjectId } from "mongodb";
-import fsSync from "fs"; 
+import fsSync from "fs";
 import path from "node:path";
+import { ObjectId } from "mongodb";
 import axios from "axios";
 import FormData from "form-data";
-import transporter from "../config/mailer.js";
-import {
-  createCandidature,
-  updateCandidaturePersonalInfoForm,
-  countCandidatures, getCandidaturesWithJobDetails,getCandidatureJob,getMyCandidaturesWithJob,
-  updateCandidatureExtracted,
-  findPendingJobMatch,
-  findPendingAiDetection,
-  lockJobMatch,
-  lockAiDetection,
-  markJobMatchDone,
-  markJobMatchFailed,
-  markAiDetectionDone,
-  markAiDetectionFailed,
-  getMatchingStats , getAcademicStats,
-  alreadySubmittedForJob,findCandidatureById,
-} from "../models/candidature.model.js";
-import { findJobOfferById } from "../models/job.model.js";
-import { findUserById } from "../models/user.model.js";
+import { getDB } from "../models/db.js";
 import { createNotificationForAdmins, NOTIFICATION_TYPES } from "../models/Notification.model.js";
+import { findUserByEmail, createUser } from "../models/user.model.js";
+import { sendCandidateWelcomeEmail } from "../services/mail.service.js";
 
-import {
-  createSubmission,
-  findSubmissionByFicheAndCandidature,
-} from "../models/ficheSubmission.model.js";
-import { findFicheById } from "../models/FicheRenseignement.js";
-const UPLOAD_DIR = path.join(process.cwd(), "uploads", "cvs");
+/* ── Config ──────────────────────────────────────────────── */
+const UPLOAD_DIR  = path.join(process.cwd(), "uploads", "cvs");
+const FASTAPI_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
+if (!process.env.ML_SERVICE_URL) {
+  console.warn("⚠️  ML_SERVICE_URL not set in .env — using http://localhost:8000");
+}
 
-const FASTAPI_URL = process.env.ML_SERVICE_URL;
-
-/* =========================================================
-   UTILS
-========================================================= */
-
-// Simple sleep utility (anti rate-limit)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Worker locks (avoid parallel runs)
+/* ── Collections ─────────────────────────────────────────── */
+const tenderCol = () => getDB().collection("tenders");
+const applyCol  = () => getDB().collection("tender_applications");
+
+/* ── Worker locks ────────────────────────────────────────── */
 let aiDetectionWorkerRunning = false;
-let jobMatchWorkerRunning = false;
+let tenderMatchWorkerRunning = false;
 
 /* =========================================================
    HELPER: Extract CV Text
+   Priorité: texte_brut sauvé par cv_tasks.py → reconstruction fragments
 ========================================================= */
 function extractCvText(extracted) {
-  if (!extracted) {
-    console.warn("⚠️ No extracted data");
-    return null;
-  }
+  if (!extracted) return null;
 
-  console.log("🔍 Extracting from structure with keys:", Object.keys(extracted));
+  // ✅ Source la plus fiable — sauvegardée par cv_tasks.py
+  const brut =
+    extracted?.texte_brut ||
+    extracted?.parsed?.texte_brut ||
+    extracted?.raw_text ||
+    null;
 
-  // ✅ FIX: Check if data is nested in 'parsed' field
+  if (brut && brut.trim().length >= 100) return brut.trim();
+
+  // Fallback: reconstruction depuis structure parsée
   let data = extracted;
-  if (extracted.parsed && typeof extracted.parsed === 'object') {
-    console.log("📦 Using extracted.parsed");
+  if (extracted.parsed && typeof extracted.parsed === "object") {
     data = extracted.parsed;
   }
 
-  let parts = [];
+  const parts = [];
+  const pi = data.personal_info || data;
 
-  // ===== STRATEGY 1: Direct fields =====
-  const directFields = [
-    'nom', 'email', 'telephone', 'adresse', 'titre_poste', 'profil',
-    'name', 'phone', 'address', 'title', 'summary', 'profile'
-  ];
-
-  directFields.forEach(field => {
-    if (data[field] && typeof data[field] === 'string') {
-      parts.push(data[field]);
-    }
+  ["full_name", "nom", "name", "email", "titre_poste", "profil", "summary"].forEach((f) => {
+    if (pi[f] && typeof pi[f] === "string") parts.push(pi[f]);
   });
 
-  // ===== STRATEGY 2: Nested personal_info =====
-  if (data.personal_info) {
-    const pi = data.personal_info;
-    ['full_name', 'name', 'email', 'phone', 'telephone', 'address', 'adresse'].forEach(field => {
-      if (pi[field] && typeof pi[field] === 'string') {
-        parts.push(pi[field]);
-      }
-    });
-  }
-
-  // ===== STRATEGY 3: Experience =====
-  const expFields = ['experience_professionnelle', 'experience', 'work_experience', 'experiences'];
-  expFields.forEach(field => {
-    if (Array.isArray(data[field])) {
-      data[field].forEach((exp) => {
-        ['poste', 'position', 'title', 'role', 'entreprise', 'company', 'description'].forEach(subfield => {
-          if (exp[subfield]) parts.push(String(exp[subfield]));
+  ["experience_professionnelle", "experience", "work_experience", "experiences"].forEach((f) => {
+    if (Array.isArray(data[f])) {
+      data[f].forEach((e) => {
+        ["poste", "position", "title", "role", "entreprise", "company", "description"].forEach((sf) => {
+          if (e[sf]) parts.push(String(e[sf]));
         });
       });
     }
   });
 
-  // ===== STRATEGY 4: Formation =====
-  const eduFields = ['formation', 'education', 'formations', 'educations'];
-  eduFields.forEach(field => {
-    if (Array.isArray(data[field])) {
-      data[field].forEach((f) => {
-        ['diplome', 'degree', 'diploma', 'etablissement', 'institution', 'school'].forEach(subfield => {
-          if (f[subfield]) parts.push(String(f[subfield]));
+  ["competences", "skills"].forEach((f) => {
+    if (data[f] && typeof data[f] === "object") {
+      Object.values(data[f]).forEach((v) => {
+        if (Array.isArray(v)) parts.push(...v.map(String));
+        else if (typeof v === "string") parts.push(v);
+      });
+    }
+  });
+
+  ["formation", "education", "formations"].forEach((f) => {
+    if (Array.isArray(data[f])) {
+      data[f].forEach((e) => {
+        ["diplome", "degree", "etablissement", "institution"].forEach((sf) => {
+          if (e[sf]) parts.push(String(e[sf]));
         });
       });
     }
   });
 
-  // ===== STRATEGY 5: Competences/Skills =====
-  const skillFields = ['competences', 'skills', 'competencies'];
-  skillFields.forEach(field => {
-    if (data[field]) {
-      const comp = data[field];
-      Object.values(comp).forEach(value => {
-        if (Array.isArray(value)) {
-          parts.push(...value.map(String));
-        } else if (typeof value === 'string') {
-          parts.push(value);
-        }
-      });
-    }
-  });
-
-  // ===== STRATEGY 6: Projects =====
-  const projFields = ['projets', 'projects', 'projet', 'project'];
-  projFields.forEach(field => {
-    if (Array.isArray(data[field])) {
-      data[field].forEach((p) => {
-        ['nom', 'name', 'title', 'description'].forEach(subfield => {
-          if (p[subfield]) parts.push(String(p[subfield]));
-        });
-        if (Array.isArray(p.technologies)) {
-          parts.push(...p.technologies.map(String));
-        }
-      });
-    }
-  });
-
-  // ===== STRATEGY 7: Languages =====
-  const langFields = ['langues', 'languages', 'langue', 'language'];
-  langFields.forEach(field => {
-    if (Array.isArray(data[field])) {
-      data[field].forEach((l) => {
-        if (l.langue || l.language) {
-          parts.push(String(l.langue || l.language));
-        }
-      });
-    }
-  });
-
-  // ===== STRATEGY 8: Certifications =====
-  if (Array.isArray(data.certifications)) {
-    data.certifications.forEach((cert) => {
-      if (cert.nom || cert.name) {
-        parts.push(String(cert.nom || cert.name));
-      }
-    });
-  }
-
-  // Filter and clean
-  const cleanedParts = parts
-    .filter(Boolean)
-    .filter(p => typeof p === 'string')
-    .filter(p => p.trim().length > 0)
-    .map(p => p.trim());
-
-  const result = cleanedParts.join(" ");
-  
-  console.log(`✅ Extracted ${cleanedParts.length} parts, total ${result.length} chars`);
-  
+  const result = parts.filter(Boolean).map((p) => p.trim()).join(" ");
   return result.length > 0 ? result : null;
 }
 
 /* =========================================================
    CONTROLLER: Upload CV
+   POST /applications/:tenderId/cv
+   (ancienne route: /applications/:jobId/cv → compatible via param alias)
 ========================================================= */
 export const uploadCv = async (c) => {
   let filePath = null;
 
   try {
-    console.log("📥 Upload CV route called");
+    await fs.mkdir(UPLOAD_DIR, { recursive: true });
 
-    const body = await c.req.parseBody();
-    console.log("📦 Body keys:", Object.keys(body));
-
-    const file = body.cv;
-    console.log("📄 File received:", file?.name);
+    const body     = await c.req.parseBody();
+    const file     = body.cv;
+    const tenderId = c.req.param("tenderId") || c.req.param("jobId");
 
     if (!file || typeof file.arrayBuffer !== "function") {
-      return c.json({ message: "CV required" }, 400);
+      return c.json({ message: "CV requis (PDF)" }, 400);
+    }
+    if (!tenderId || !ObjectId.isValid(tenderId)) {
+      return c.json({ message: "tenderId invalide" }, 400);
     }
 
-    /* ===== SAVE FILE ===== */
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const uploadDir = path.join(process.cwd(), "uploads", "cvs");
+    // Vérifier que le tender existe
+    const tender = await tenderCol().findOne({
+      _id: new ObjectId(tenderId),
+      status: { $ne: "ARCHIVED" },
+    });
+    if (!tender) return c.json({ message: "Tender non disponible" }, 404);
 
-    if (!fsSync.existsSync(uploadDir)) {
-      fsSync.mkdirSync(uploadDir, { recursive: true });
-    }
-
-    const safeName = file.name.replace(/\s+/g, "_");
+    // Sauvegarder le fichier
+    const safeName = file.name.replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "");
     const fileName = `${Date.now()}-${safeName}`;
-    filePath = path.join(uploadDir, fileName);
+    filePath = path.join(UPLOAD_DIR, fileName);
+    fsSync.writeFileSync(filePath, Buffer.from(await file.arrayBuffer()));
 
-    fsSync.writeFileSync(filePath, buffer);
-
-    /* ===== SEND TO FASTAPI (EXTRACT) ===== */
+    // Envoyer à FastAPI pour extraction async
     const form = new FormData();
     form.append("cv", fsSync.createReadStream(filePath), {
-      filename: fileName,
+      filename:    fileName,
       contentType: "application/pdf",
     });
 
     const startRes = await axios.post(`${FASTAPI_URL}/cv/extract`, form, {
       headers: form.getHeaders(),
-      timeout: 300000,
+      timeout: 30000,
     });
 
-    const extractionJobId = startRes.data.job_id;
-    if (!extractionJobId) {
-      throw new Error("FastAPI did not return job_id");
-    }
+    const jobId = startRes.data?.job_id;
+    if (!jobId) throw new Error("FastAPI n'a pas retourné de job_id");
 
-    /* ===== POLLING ===== */
+    // Polling
     let extracted = null;
-
     for (let i = 0; i < 60; i++) {
-      const statusRes = await axios.get(
-        `${FASTAPI_URL}/cv/status/${extractionJobId}`,
-        { timeout: 30000 },
-      );
-
-      if (statusRes.data.status === "COMPLETED") {
-        extracted = statusRes.data.result;
-        break;
-      }
-
-      if (statusRes.data.status === "FAILED") {
-        throw new Error(statusRes.data.error || "Extraction failed");
-      }
-
+      const statusRes = await axios.get(`${FASTAPI_URL}/cv/status/${jobId}`, { timeout: 15000 });
+      if (statusRes.data.status === "COMPLETED") { extracted = statusRes.data.result || {}; break; }
+      if (statusRes.data.status === "FAILED")    { throw new Error(statusRes.data.error || "Extraction échouée"); }
       await sleep(2000);
     }
+    if (!extracted) throw new Error("Extraction timeout (120s)");
 
-    if (!extracted) throw new Error("Extraction timeout");
-
-    /* ===== ✅ VÉRIF DOUBLON AVANT CRÉATION ===== */
-    // On extrait l'email depuis le CV extrait pour bloquer AVANT de créer un doc inutile
-    const emailFromCv =
-      extracted?.email ||
-      extracted?.personal_info?.email ||
-      extracted?.parsed?.email ||
+    // Extraire email pour vérif doublon
+    const email = (
       extracted?.parsed?.personal_info?.email ||
-      null;
+      extracted?.personal_info?.email ||
+      extracted?.email ||
+      ""
+    ).toLowerCase();
 
-    const jobId = c.req.param("jobId");
-
-    if (emailFromCv) {
-      const { alreadySubmittedForJob } = await import("../models/candidature.model.js");
-      const isDuplicate = await alreadySubmittedForJob(jobId, { email: emailFromCv });
-      if (isDuplicate) {
-        // Supprimer le fichier uploadé inutilement
-        if (filePath && fsSync.existsSync(filePath)) fsSync.unlinkSync(filePath);
-        console.log(`🚫 Upload bloqué - doublon détecté pour: ${emailFromCv}`);
-        return c.json(
-          {
-            message: "Vous avez déjà soumis une candidature pour cette offre.",
-            code: "ALREADY_SUBMITTED",
-          },
-          409
-        );
+    if (email) {
+      const existing = await applyCol().findOne({
+        tenderId: new ObjectId(tenderId),
+        email,
+        status:   { $ne: "DRAFT" },
+      });
+      if (existing) {
+        fsSync.unlinkSync(filePath);
+        return c.json({ message: "Vous avez déjà postulé à cet appel d'offres.", code: "ALREADY_SUBMITTED" }, 409);
       }
     }
 
-    /* ===== SAVE CANDIDATURE ===== */
-    const result = await createCandidature({
-      jobOfferId: c.req.param("jobId"),
-      cv: {
-        fileUrl: `/uploads/cvs/${fileName}`,
-        originalName: file.name,
-      },
-      status: "DRAFT",
+    // Créer la candidature DRAFT
+    const result = await applyCol().insertOne({
+      tenderId:    new ObjectId(tenderId),
+      tenderTitre: tender.titre || "",
+      cv: { fileUrl: `/uploads/cvs/${fileName}`, originalName: file.name },
       extracted,
+      email:       email || null,
+      status:      "DRAFT",
+      aiDetection: { status: "PENDING" },
+      tenderMatch: { status: "PENDING" },
+      matchScore:  null,
+      createdAt:   new Date(),
+      updatedAt:   new Date(),
     });
-
-    // ⚠️ NE PAS déclencher l'analyse ici !
-    // L'analyse (AI detection + job match) se déclenche seulement dans confirmApplication
-    // APRÈS vérification que l'email n'a pas déjà postulé à cette offre.
-    // Si on trigger ici → analyse inutile pour les doublons.
 
     return c.json({
       candidatureId: result.insertedId.toString(),
-      cvFileUrl: `/uploads/cvs/${fileName}`,
+      cvFileUrl:     `/uploads/cvs/${fileName}`,
       extracted,
     });
   } catch (err) {
-    console.error("❌ CV processing failed:", err);
-
-    if (filePath && fsSync.existsSync(filePath)) {
-      fsSync.unlinkSync(filePath);
-    }
-
-    return c.json(
-      {
-        success: false,
-        message: "Échec du traitement du CV",
-        error: err.message,
-      },
-      500,
-    );
+    console.error("❌ uploadCv error:", err.message);
+    if (filePath && fsSync.existsSync(filePath)) fsSync.unlinkSync(filePath);
+    return c.json({ success: false, message: "Échec du traitement du CV", error: err.message }, 500);
   }
 };
 
 /* =========================================================
    CONTROLLER: Confirm Application
+   POST /applications/:candidatureId/confirm
 ========================================================= */
 export const confirmApplication = async (c) => {
   try {
     const candidatureId = c.req.param("candidatureId");
     const body = await c.req.json();
 
-    // ✅ Vérification email — empêche la double candidature sur la même offre
-    // Le frontend envoie { parsed, manual, personalInfoForm } donc on cherche dans toutes les structures
-    const email =
-      body?.parsed?.personal_info?.email ||   // ← structure frontend réelle
-      body?.parsed?.email ||
-      body?.manual?.personal_info?.email ||
-      body?.personalInfoForm?.email ||
-      body?.personal_info?.email ||           // ← fallback ancienne structure
-      body?.extracted?.personal_info?.email ||
-      body?.extracted?.email ||
-      null;
-    
-    console.log("🔍 Email détecté pour vérif doublon:", email);
+    if (!ObjectId.isValid(candidatureId)) {
+      return c.json({ message: "candidatureId invalide" }, 400);
+    }
 
-    // ✅ Récupérer le doc pour avoir jobOfferId + candidatId
-    const { getDB: _getDB } = await import("../models/db.js");
-    const candidDoc = await _getDB()
-      .collection("candidatures")
-      .findOne({ _id: new ObjectId(candidatureId) });
+    const doc = await applyCol().findOne({ _id: new ObjectId(candidatureId) });
+    if (!doc) return c.json({ message: "Candidature introuvable" }, 404);
 
-    if (candidDoc?.jobOfferId) {
-      const alreadySubmitted = await alreadySubmittedForJob(
-        candidDoc.jobOfferId.toString(),
-        {
-          candidatId: candidDoc.candidatId?.toString() || null,
-          email,
-        }
-      );
+    // Extraire infos finales du formulaire
+    const parsed = body?.parsed || body?.extracted?.parsed || {};
+    const pi     = parsed?.personal_info || parsed || {};
 
-      if (alreadySubmitted) {
-        return c.json(
-          {
-            message: "Vous avez déjà soumis une candidature pour cette offre.",
-            code: "ALREADY_SUBMITTED",
-          },
-          409
-        );
+    const fullName   = pi.full_name || pi.nom || pi.name || body?.fullName || doc.fullName || "";
+    const email      = (pi.email || body?.email || doc.email || "").toLowerCase();
+    const phone      = pi.telephone || pi.phone || body?.phone || doc.phone || "";
+    const motivation = body?.motivation || doc.motivation || "";
+
+    // Vérif doublon
+    if (email && doc.tenderId) {
+      const existing = await applyCol().findOne({
+        tenderId: doc.tenderId,
+        email,
+        status:   { $ne: "DRAFT" },
+        _id:      { $ne: new ObjectId(candidatureId) },
+      });
+      if (existing) {
+        return c.json({ message: "Vous avez déjà postulé à cet appel d'offres.", code: "ALREADY_SUBMITTED" }, 409);
       }
     }
 
-    // ✅ Met à jour le extracted avec les données du formulaire
-    await updateCandidatureExtracted(candidatureId, body);
+    // Fusionner extracted
+    const mergedExtracted = { ...(doc.extracted || {}), ...(body?.extracted || {}) };
+    if (body?.parsed) mergedExtracted.parsed = body.parsed;
 
-    // ✅ FIX DOUBLON: Met status="SUBMITTED" à la RACINE du document candidature
-    // AVANT ce fix, alreadySubmittedForJob ne trouvait jamais de doublon car
-    // { status: "SUBMITTED" } était écrit dans extracted.status et non à la racine
-    const { getDB: _getDB2 } = await import("../models/db.js");
-    await _getDB2().collection("candidatures").updateOne(
+    await applyCol().updateOne(
       { _id: new ObjectId(candidatureId) },
-      { $set: { status: "SUBMITTED", updatedAt: new Date() } }
+      {
+        $set: {
+          fullName, email, phone, motivation,
+          extracted:  mergedExtracted,
+          status:     "SUBMITTED",
+          updatedAt:  new Date(),
+        },
+      }
     );
 
-    // ✅ Notifier les admins d'une nouvelle candidature
+    // Notification admins
     try {
-      let jobTitle = "Offre inconnue";
-      let candidatName = "Candidat";
-
-      // ✅ Récupérer la candidature en base pour avoir le jobOfferId
-      const { getDB } = await import("../models/db.js");
-      const candidatureDoc = await getDB()
-        .collection("candidatures")
-        .findOne({ _id: new ObjectId(candidatureId) });
-
-      const jobId = candidatureDoc?.jobOfferId;
-      if (jobId) {
-        const job = await findJobOfferById(jobId.toString());
-        if (job) jobTitle = job.titre;
-      }
-
-      // Récupérer le nom du candidat depuis user ou extracted
-      const user = c.get("user");
-      if (user?.id) {
-        const userDoc = await findUserById(user.id);
-        if (userDoc) {
-          candidatName = [userDoc.prenom, userDoc.nom].filter(Boolean).join(" ") || userDoc.email;
-        }
-      }
-      if (candidatName === "Candidat") {
-        const ext = candidatureDoc?.extracted || body.extracted;
-        const pi = ext?.personal_info || ext?.parsed?.personal_info;
-        if (pi) {
-          candidatName = pi.full_name || pi.name || pi.nom || "Candidat";
-        }
-      }
-
       await createNotificationForAdmins({
-        type: NOTIFICATION_TYPES.NEW_CANDIDATURE,
-        message: `Nouvelle candidature de ${candidatName} pour "${jobTitle}"`,
-        link: `/recruiter/candidatures`,
-        metadata: {
-          candidatureId,
-          candidatName,
-          jobTitle,
-        },
+        type:    NOTIFICATION_TYPES.NEW_CANDIDATURE,
+        message: `Nouvelle candidature de ${fullName || email || "Candidat"} pour "${doc.tenderTitre || "Tender"}"`,
+        link:    `/recruiter/tenders`,
+        metadata: { candidatureId, candidatName: fullName, tenderTitre: doc.tenderTitre },
       });
     } catch (notifErr) {
-      console.error("⚠️ Erreur notification nouvelle candidature:", notifErr.message);
+      console.error("⚠️ Notification error:", notifErr.message);
     }
 
-    // ✅ TRIGGER BOTH WORKERS
-    triggerAiDetectionWorker();
-    triggerJobMatchWorker();
+    // ✅ Création compte candidat automatique
+    if (email) {
+      try {
+        const existingUser = await findUserByEmail(email);
+        if (!existingUser) {
+          // Générer un mot de passe temporaire
+          const tempPassword = Math.random().toString(36).slice(-8) + "A1!";
+          const { hashPassword } = await import("../utils/password.js");
+          const hashed = await hashPassword(tempPassword);
 
-    return c.json({
-      message: "Candidature envoyée avec succès. Analyse en cours.",
-    });
+          const nameParts = fullName.trim().split(" ");
+          const prenom = nameParts[0] || "";
+          const nom    = nameParts.slice(1).join(" ") || "";
+
+          await createUser({
+            nom, prenom, email,
+            password: hashed,
+            role: "CANDIDATE",
+          });
+
+          // Envoyer email de bienvenue avec identifiants
+          await sendCandidateWelcomeEmail(email, {
+            fullName: fullName || email,
+            email,
+            password: tempPassword,
+            loginUrl: `${process.env.FRONT_URL}/candidate/login`,
+          });
+
+          console.log("✅ Compte candidat créé pour:", email);
+        }
+      } catch (accountErr) {
+        // Ne pas bloquer la candidature si la création du compte échoue
+        console.error("⚠️ Erreur création compte candidat:", accountErr.message);
+      }
+    }
+
+    // Déclencher les workers
+    triggerAiDetectionWorker();
+    triggerTenderMatchWorker();
+
+    return c.json({ message: "Candidature envoyée avec succès. Analyse en cours." });
   } catch (err) {
-    console.error(err);
+    console.error("❌ confirmApplication error:", err);
     return c.json({ message: "Submit failed", error: err.message }, 500);
   }
 };
 
 /* =========================================================
-   AI DETECTION WORKER
+   WORKER: AI Detection
 ========================================================= */
 function triggerAiDetectionWorker() {
   if (aiDetectionWorkerRunning) return;
-
   aiDetectionWorkerRunning = true;
-
   processPendingAiDetections(1)
-    .catch((err) => console.error("❌ AI detection worker failed:", err))
-    .finally(() => {
-      aiDetectionWorkerRunning = false;
-    });
+    .catch((err) => console.error("❌ AI detection worker:", err))
+    .finally(() => { aiDetectionWorkerRunning = false; });
 }
 
 export async function processPendingAiDetections(limit = 1) {
-  const candidatures = await findPendingAiDetection(limit);
+  const docs = await applyCol()
+    .find({ status: "SUBMITTED", "aiDetection.status": "PENDING" })
+    .limit(limit).toArray();
 
-  for (const c of candidatures) {
-    await lockAiDetection(c._id);
-    console.log("🤖 Processing AI detection for:", c._id);
-
+  for (const doc of docs) {
+    await applyCol().updateOne({ _id: doc._id }, { $set: { "aiDetection.status": "PROCESSING" } });
     try {
-      // ✅ IMPROVED: Extract CV text with better fallbacks
-      const cvText = extractCvText(c.extracted);
-
-      console.log("📝 Extracted CV text length:", cvText?.length || 0);
-      console.log("📦 Extracted structure:", JSON.stringify(c.extracted, null, 2).substring(0, 500));
-
-      if (!cvText || cvText.trim().length < 50) {
-        throw new Error(`CV text too short or empty (${cvText?.length || 0} chars). Check extracted structure.`);
-      }
-
-      const payload = {
-        candidatureId: c._id.toString(),
-        cvText: cvText,
-      };
+      const cvText = extractCvText(doc.extracted);
+      if (!cvText || cvText.trim().length < 50) throw new Error("CV text trop court");
 
       const res = await axios.post(
         `${FASTAPI_URL}/analyze/ai-detection`,
-        payload,
-        { timeout: 60000 },
+        { candidatureId: doc._id.toString(), cvText },
+        { timeout: 60000 }
       );
 
-      await markAiDetectionDone(
-        c._id,
-        res.data.isAIGenerated,
-        res.data.confidence,
-      );
-
-      console.log("✅ AI detection done:", res.data);
-
-      await sleep(2000); // Anti rate-limit
+      await applyCol().updateOne({ _id: doc._id }, {
+        $set: {
+          "aiDetection.status":      "DONE",
+          "aiDetection.isAI":        res.data.isAIGenerated,
+          "aiDetection.confidence":  res.data.confidence,
+          "aiDetection.explanation": res.data.explanation,
+          updatedAt: new Date(),
+        },
+      });
+      console.log("✅ AI detection:", doc._id, "isAI:", res.data.isAIGenerated);
+      await sleep(2000);
     } catch (err) {
       console.error("❌ AI detection failed:", err.message);
-      await markAiDetectionFailed(c._id, err.response?.data || err.message);
+      await applyCol().updateOne({ _id: doc._id }, {
+        $set: { "aiDetection.status": "FAILED", "aiDetection.error": err.message }
+      });
       await sleep(3000);
     }
   }
 }
 
 /* =========================================================
-   JOB MATCH WORKER
+   WORKER: Tender Match
+   ✅ Compare CV du candidat vs exigences du TENDER
+   Réutilise /analyze/job-match en passant tender.resume + competences comme "job"
 ========================================================= */
-function triggerJobMatchWorker() {
-  if (jobMatchWorkerRunning) return;
-
-  jobMatchWorkerRunning = true;
-
-  processPendingJobMatches(1)
-    .catch((err) => console.error("❌ Job match worker failed:", err))
-    .finally(() => {
-      jobMatchWorkerRunning = false;
-    });
+function triggerTenderMatchWorker() {
+  if (tenderMatchWorkerRunning) return;
+  tenderMatchWorkerRunning = true;
+  processPendingTenderMatches(1)
+    .catch((err) => console.error("❌ Tender match worker:", err))
+    .finally(() => { tenderMatchWorkerRunning = false; });
 }
 
-export async function processPendingJobMatches(limit = 1) {
-  const candidatures = await findPendingJobMatch(limit);
+export async function processPendingTenderMatches(limit = 1) {
+  const docs = await applyCol()
+    .find({ status: "SUBMITTED", "tenderMatch.status": "PENDING" })
+    .limit(limit).toArray();
 
-  for (const c of candidatures) {
-    await lockJobMatch(c._id);
-    console.log("💼 Processing job match for:", c._id);
-
+  for (const doc of docs) {
+    await applyCol().updateOne({ _id: doc._id }, { $set: { "tenderMatch.status": "PROCESSING" } });
     try {
-      // ✅ VALIDATION: Vérifier que job existe
-      if (!c.job) {
-        throw new Error(`No job found for candidature ${c._id}. Check jobOfferId and job_offers collection.`);
-      }
+      const tender = await tenderCol().findOne({ _id: doc.tenderId });
+      if (!tender) throw new Error(`Tender ${doc.tenderId} introuvable`);
 
-      if (!c.job.titre && !c.job.description) {
-        throw new Error(`Job ${c.job._id} has no titre or description. Cannot analyze match.`);
-      }
+      const cvText = extractCvText(doc.extracted);
+      if (!cvText || cvText.trim().length < 50) throw new Error("CV text trop court");
 
-      const cvText = extractCvText(c.extracted);
+      console.log("💼 Tender match:", doc._id, "→", tender.titre, "| CV:", cvText.length, "chars");
 
-      console.log("📝 Extracted CV text length:", cvText?.length || 0);
-      console.log("📋 Job info:", { 
-        jobId: c.job._id, 
-        titre: c.job.titre, 
-        hasDescription: !!c.job.description,
-        hardSkillsCount: c.job.hardSkills?.length || 0,
-        softSkillsCount: c.job.softSkills?.length || 0,
-        hasScores: !!c.job.scores,
-        scores: c.job.scores
-      });
-
-      if (!cvText || cvText.trim().length < 50) {
-        throw new Error(`CV text too short or empty (${cvText?.length || 0} chars). Check extracted structure.`);
-      }
-
+      // ✅ On envoie le tender comme "job" à FastAPI /analyze/job-match
       const payload = {
-        candidatureId: c._id.toString(),
-        cvText: cvText,
+        candidatureId: doc._id.toString(),
+        cvText,
         job: {
-          titre: c.job.titre || "",
-          description: c.job.description || "",
-          hardSkills: Array.isArray(c.job?.hardSkills) ? c.job.hardSkills : [],
-          softSkills: Array.isArray(c.job?.softSkills) ? c.job.softSkills : [],
+          titre:       tender.titre  || "Appel d'offres",
+          description: tender.resume || "",
+          hardSkills:  Array.isArray(tender.competences_requises) ? tender.competences_requises : [],
+          softSkills:  Array.isArray(tender.keywords)             ? tender.keywords             : [],
         },
-        extracted: c.extracted || {},
       };
 
-      // ✅ envoyer scores SEULEMENT s'ils existent
-      if (c.job?.scores && Object.keys(c.job.scores).length > 0) {
-        payload.job.scores = c.job.scores;
+      // Ajouter exigences techniques comme contexte si dispo
+      const techReqs = tender.requirements?.technical;
+      if (Array.isArray(techReqs) && techReqs.length > 0) {
+        payload.job.description += `\n\nExigences techniques:\n${techReqs.join("\n")}`;
       }
 
-      const res = await axios.post(
-        `${FASTAPI_URL}/analyze/job-match`,
-        payload,
-        { timeout: 120000 },
-      );
+      const res = await axios.post(`${FASTAPI_URL}/analyze/job-match`, payload, { timeout: 120000 });
 
-      await markJobMatchDone(c._id, res.data);
+      if (!res.data || res.data.status === "FAILED") {
+        throw new Error(res.data?.error || "ML returned FAILED");
+      }
 
-      console.log("✅ Job match done:", res.data.score);
+      const score100 = Math.round((res.data.score || 0) * 100);
 
-      await sleep(2000); // Anti rate-limit
+      await applyCol().updateOne({ _id: doc._id }, {
+        $set: {
+          "tenderMatch.status":             "DONE",
+          "tenderMatch.score":              res.data.score,
+          "tenderMatch.recommendation":     res.data.recommendation,
+          "tenderMatch.detailedScores":     res.data.detailedScores,
+          "tenderMatch.experienceAnalysis": res.data.experienceAnalysis,
+          "tenderMatch.skillsAnalysis":     res.data.skillsAnalysis,
+          "tenderMatch.summary":            res.data.summary,
+          "tenderMatch.strengths":          res.data.strengths,
+          "tenderMatch.weaknesses":         res.data.weaknesses,
+          "tenderMatch.nextSteps":          res.data.nextSteps,
+          matchScore:   score100,
+          updatedAt:    new Date(),
+        },
+      });
+
+      console.log("✅ Tender match done:", doc._id, "| score:", score100 + "%");
+      await sleep(2000);
     } catch (err) {
-      console.error("❌ Job match failed:", err.message);
-      await markJobMatchFailed(c._id, err.response?.data || err.message);
+      const errMsg = err.response?.data?.detail || err.response?.data || err.message;
+      console.error("❌ Tender match failed:", errMsg);
+      await applyCol().updateOne({ _id: doc._id }, {
+        $set: { "tenderMatch.status": "FAILED", "tenderMatch.error": String(errMsg) }
+      });
       await sleep(3000);
     }
   }
 }
 
-
-
-
-
-
-
-
-async function ensureUploadDir() {
-  await fs.mkdir(UPLOAD_DIR, { recursive: true });
-}
-
-/* ================================
-   POST /api/candidatures/extract
-================================ */
-/* ================================
-   POST /api/candidatures/extract
-   ✅ FIXED: FormData with fs.createReadStream
-================================ */
-export async function extractCandidature(c) {
+/* =========================================================
+   CONTROLLER: Pre-Interview List
+   GET /candidatures/pre-interview
+   → Candidatures avec score ≥ 50% ou manuellement pré-sélectionnées
+========================================================= */
+export async function getPreInterviewListController(c) {
   try {
-    await ensureUploadDir();
+    const docs = await applyCol()
+      .find({
+        status: { $in: ["SUBMITTED", "REVIEWED", "ACCEPTED"] },
+        $or: [
+          { preInterview: true },
+          { matchScore: { $gte: 50 } },
+        ],
+      })
+      .sort({ matchScore: -1, createdAt: -1 })
+      .toArray();
 
-    const body = await c.req.parseBody();
-    const jobOfferId = body.jobOfferId;
-    const cvFile = body.cv;
-
-    // ✅ Separate validation messages for better test compatibility
-    if (!jobOfferId) {
-      return c.json({ message: "jobOfferId est requis" }, 400);
-    }
-
-    if (!cvFile) {
-      return c.json({ message: "Fichier CV requis" }, 400);
-    }
-
-    if (cvFile.size > 5 * 1024 * 1024) {
-      return c.json({ message: "Fichier trop grand (max 5MB)" }, 413);
-    }
-
-    const user = c.get("user");
-    if (!user?.id) {
-      return c.json({ message: "Utilisateur non authentifié" }, 401);
-    }
-
-    // ===== SAVE FILE =====
-    const ext = cvFile.name?.split(".").pop() || "pdf";
-    const filename = `cv_${user.id}_${Date.now()}.${ext}`;
-    const filepath = path.join(UPLOAD_DIR, filename);
-
-    const arrayBuffer = await cvFile.arrayBuffer();
-    await fs.writeFile(filepath, Buffer.from(arrayBuffer));
-
-    // ===== CREATE CANDIDATURE =====
-    const created = await createCandidature({
-      jobOfferId,
-      candidatId: user.id,
-      cv: {
-        filename,
-        path: filepath,
-        mimetype: cvFile.type,
-        size: cvFile.size,
-      },
-      status: "DRAFT",
-    });
-
-    // ===== CALL ML SERVICE =====
-    const mlUrl = process.env.ML_SERVICE_URL || "http://localhost:8000/extract";
-
-    // ✅ FIX: Use fs.createReadStream instead of Blob for Node.js
-    const form = new FormData();
-    const fileStream = fsSync.createReadStream(filepath);
-    form.append("cv", fileStream, {
-      filename: filename,
-      contentType: cvFile.type || "application/pdf",
-    });
-
-    let mlRes;
-    let extracted = {};
-
-    try {
-      mlRes = await fetch(mlUrl, {
-        method: "POST",
-        body: form,
-        headers: form.getHeaders(),
-      });
-
-      if (mlRes.ok) {
-        extracted = await mlRes.json();
-      } else {
-        const errText = await mlRes.text();
-        console.error("❌ ML Service error:", errText);
-        // Continue even if ML fails
-      }
-    } catch (fetchErr) {
-      console.error("❌ ML Service fetch error:", fetchErr);
-      // Continue even if ML service is down
-    }
-
-    // ===== SAVE extracted =====
-    if (Object.keys(extracted).length > 0) {
-      await updateCandidatureExtracted(created.insertedId, extracted);
-    }
-
-    // ===== AUTOFILL personalInfoForm =====
-    const pi = extracted?.personal_info || {};
-
-    const personalInfoForm = {
-      dateNaissance: pi.date_naissance || null,
-      lieuNaissance: pi.lieu_naissance || null,
-      telephone: pi.telephone || null,
-    };
-
-    // ===== SAVE personalInfoForm in DB =====
-    if (Object.values(personalInfoForm).some(v => v !== null)) {
-      await updateCandidaturePersonalInfoForm(created.insertedId, personalInfoForm);
-    }
-
-    return c.json({
-      candidatureId: String(created.insertedId),
-      extracted,
-      personalInfoForm,
-    });
+    return c.json(docs);
   } catch (err) {
-    console.error("extractCandidature error:", err);
-    return c.json(
-      { message: "Erreur serveur", error: err?.message || "Unknown error" },
-      500
-    );
+    console.error("❌ getPreInterviewList error:", err);
+    return c.json({ message: "Erreur serveur", error: err.message }, 500);
   }
 }
 
-/* ================================
-   PATCH /api/candidatures/:id/personal-info
-================================ */
-export async function updatePersonalInfo(c) {
+export async function togglePreInterviewController(c) {
   try {
-    const id = c.req.param("id");
-    const body = await c.req.json();
+    const id   = c.req.param("id");
+    const body = await c.req.json().catch(() => ({})); // ✅ évite le crash si body vide
+    if (!ObjectId.isValid(id)) return c.json({ message: "ID invalide" }, 400);
 
-    // body = personalInfoForm venant du front
-    await updateCandidaturePersonalInfoForm(id, body);
+    const doc = await applyCol().findOne({ _id: new ObjectId(id) });
+    if (!doc) return c.json({ message: "Candidature introuvable" }, 404);
 
-    return c.json({ message: "Informations personnelles mises à jour" });
-  } catch (err) {
-    console.error("updatePersonalInfo error:", err);
-    return c.json(
-      { message: "Erreur serveur", error: err?.message || "Unknown error" },
-      500
+    // ✅ Si preInterview non fourni dans body → toggle la valeur actuelle
+    const newValue = body.preInterview !== undefined
+      ? !!body.preInterview
+      : !doc.preInterview;
+
+    await applyCol().updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { preInterview: newValue, updatedAt: new Date() } }
     );
+    return c.json({ message: "Mis à jour", preInterview: newValue });
+  } catch (err) {
+    console.error("❌ togglePreInterview error:", err);
+    return c.json({ message: "Erreur serveur", error: err.message }, 500);
   }
 }
 
-/* ================================
-   GET /api/candidatures/count
-================================ */
+/* =========================================================
+   CONTROLLERS: Stats / CRUD
+========================================================= */
+
 export async function getCandidatureCount(c) {
   try {
-    const count = await countCandidatures();
+    const count = await applyCol().countDocuments();
     return c.json({ count });
   } catch (err) {
-    console.error("getCandidatureCount error:", err);
-    return c.json(
-      { message: "Erreur serveur", error: err?.message || "Unknown error" },
-      500
-    );
+    return c.json({ message: "Erreur serveur", error: err.message }, 500);
   }
 }
+
 export async function getCandidaturesWithJob(c) {
   try {
-    const data = await getCandidaturesWithJobDetails();
-    return c.json(data);
+    const docs = await applyCol()
+      .aggregate([
+        { $lookup: { from: "tenders", localField: "tenderId", foreignField: "_id", as: "tender" } },
+        { $unwind: { path: "$tender", preserveNullAndEmptyArrays: true } },
+        { $sort: { createdAt: -1 } },
+        // ✅ FIX CRITIQUE: convertir _id en string pure pour éviter {$oid:"..."} côté frontend
+        { $addFields: { _id: { $toString: "$_id" } } },
+      ])
+      .toArray();
+    return c.json(docs);
   } catch (err) {
-    console.error("getCandidaturesWithJob error:", err);
-    return c.json({ message: "Server error" }, 500);
+    return c.json({ message: "Erreur serveur", error: err.message }, 500);
   }
 }
+
 export async function getCandidaturesAnalysis(c) {
-  const list = await getCandidatureJob();
-  return c.json(list);
-}
-export async function sendFicheController(c) {
-  try {
-    const candidatureId = c.req.param("candidatureId");
-    const { ficheId, email } = await c.req.json();
-
-    /* ========= VALIDATION ========= */
-    if (!ObjectId.isValid(candidatureId)) {
-      return c.json({ message: "candidatureId invalide" }, 400);
-    }
-    if (!ObjectId.isValid(ficheId)) {
-      return c.json({ message: "ficheId invalide" }, 400);
-    }
-    if (!email) {
-      return c.json({ message: "email requis" }, 400);
-    }
-
-    /* ========= FICHE ========= */
-    const fiche = await findFicheById(ficheId);
-    if (!fiche) {
-      return c.json({ message: "Fiche introuvable" }, 404);
-    }
-
-    /* ========= SUBMISSION ========= */
-    let submission = await findSubmissionByFicheAndCandidature(
-      ficheId,
-      candidatureId
-    );
-
-    if (!submission) {
-      const created = await createSubmission({
-        ficheId,
-        candidatureId,
-        candidatId: null,
-      });
-      submission = { _id: created.insertedId };
-    }
-
-    /* ========= LINK ========= */
-    const FRONT_URL = process.env.FRONT_URL;
-  const link = `${process.env.FRONT_URL}/candidat/${submission._id}`;
-
-
-    /* ========= EMAIL ========= */
-    const info = await transporter.sendMail({
-      from: `"Recrutement" <${process.env.MAIL_USER}>`,
-      to: email,
-      subject: `Fiche de renseignement – ${fiche.title}`,
-      html: `
-        <p>Bonjour,</p>
-        <p>Merci de compléter la fiche de renseignement suivante :</p>
-        <p>
-          <a href="${link}" target="_blank"
-             style="padding:10px 16px;background:#4E8F2F;color:#fff;border-radius:20px;text-decoration:none">
-            Accéder à la fiche
-          </a>
-        </p>
-        <p>Cordialement.</p>
-      `,
-    });
-
-    console.log("📧 Mail envoyé :", info.accepted);
-
-    return c.json({
-      success: true,
-      message: "Fiche envoyée par email",
-      submissionId: submission._id,
-    });
-  } catch (err) {
-    console.error("sendFicheController error:", err);
-    return c.json({ message: "Server error" }, 500);
-  }
+  return getCandidaturesWithJob(c);
 }
 
-/* ================================
-   GET /api/candidatures/my
-================================ */
 export async function getMyCandidaturesUsers(c) {
   try {
     const user = c.get("user");
-    if (!user?.id) {
-      return c.json({ message: "Utilisateur non authentifié" }, 401);
-    }
-
-    const data = await getMyCandidaturesWithJob(user.id);
-    return c.json(data);
+    if (!user?.id) return c.json({ message: "Non authentifié" }, 401);
+    const docs = user.email
+      ? await applyCol().find({ email: user.email }).sort({ createdAt: -1 }).toArray()
+      : [];
+    return c.json(docs);
   } catch (err) {
-    console.error("getMyCandidatures error:", err);
-    return c.json({ message: "Server error" }, 500);
+    return c.json({ message: "Erreur serveur", error: err.message }, 500);
   }
 }
-
-
-
-
 
 export async function getMatchingStatsController(c) {
   try {
-    const [result] = await getMatchingStats();
+    const result = await applyCol().aggregate([
+      { $match: { "tenderMatch.status": "DONE" } },
+      {
+        $group: {
+          _id:            null,
+          avgScore:       { $avg: "$matchScore" },
+          percentAbove80: { $avg: { $cond: [{ $gte: ["$matchScore", 80] }, 1, 0] } },
+          percentBelow50: { $avg: { $cond: [{ $lt:  ["$matchScore", 50] }, 1, 0] } },
+        },
+      },
+    ]).toArray();
 
-    const metrics = result?.metrics?.[0] || {
-      avgScore: 0,
-      percentAbove80: 0,
-      percentBelow50: 0,
-    };
-
-    const histogram = (result?.histogram || []).map((b) => ({
-      range: b._id === "100+" ? "100" : `${b._id}-${Number(b._id) + 20}`,
-      count: b.count,
-    }));
-
+    const m = result[0] || {};
     return c.json({
-      averageScore: metrics.avgScore,
-      percentAbove80: metrics.percentAbove80,
-      percentBelow50: metrics.percentBelow50,
-      histogram,
+      averageScore:   Math.round(m.avgScore    || 0),
+      percentAbove80: Math.round((m.percentAbove80 || 0) * 100),
+      percentBelow50: Math.round((m.percentBelow50 || 0) * 100),
     });
   } catch (err) {
-    console.error("❌ getMatchingStats error:", err);
-    return c.json(
-      { message: "Erreur statistiques matching", error: err.message },
-      500
-    );
+    return c.json({ message: "Erreur stats", error: err.message }, 500);
   }
 }
-
-
 
 export async function getAcademicStatsController(c) {
   try {
-    const [result] = await getAcademicStats();
-
+    const result = await applyCol().aggregate([
+      { $match: { "extracted.parsed.formation": { $exists: true } } },
+      { $unwind: "$extracted.parsed.formation" },
+      { $group: { _id: "$extracted.parsed.formation.etablissement", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 },
+    ]).toArray();
     return c.json({
-      topUniversities: result.topUniversities || [],
-      degreeDistribution: result.degreeDistribution || [],
-      averageLevel: result.averageLevel?.[0]?.avgLevel || 0
+      topUniversities: result.map((r) => ({ name: r._id || "Inconnu", count: r.count })),
+      degreeDistribution: [],
+      averageLevel: 0,
     });
   } catch (err) {
-    console.error("❌ Academic stats error:", err);
-    return c.json(
-      { message: "Erreur statistiques académiques", error: err.message },
-      500
-    );
+    return c.json({ message: "Erreur stats académiques", error: err.message }, 500);
   }
 }
-// candidature.controller.js
 
+export async function extractCandidature(c) {
+  // Alias pour compatibilité routes /extract
+  return uploadCv(c);
+}
 
 export async function getCandidatureById(c) {
   try {
     const id = c.req.param("id");
-
-    if (!ObjectId.isValid(id)) {
-      return c.json({ message: "ID candidature invalide" }, 400);
-    }
-
-    const doc = await findCandidatureById(id);
-
-    if (!doc) {
-      return c.json({ message: "Candidature introuvable" }, 404);
-    }
-
+    if (!ObjectId.isValid(id)) return c.json({ message: "ID invalide" }, 400);
+    const doc = await applyCol().findOne({ _id: new ObjectId(id) });
+    if (!doc) return c.json({ message: "Candidature introuvable" }, 404);
     return c.json(doc);
   } catch (err) {
-    console.error("getCandidatureById error:", err);
-    return c.json({ message: "Server error" }, 500);
+    return c.json({ message: "Erreur serveur", error: err.message }, 500);
+  }
+}
+
+export async function updatePersonalInfo(c) {
+  try {
+    const id   = c.req.param("id");
+    const body = await c.req.json();
+    if (!ObjectId.isValid(id)) return c.json({ message: "ID invalide" }, 400);
+    await applyCol().updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { personalInfoForm: body, updatedAt: new Date() } }
+    );
+    return c.json({ message: "Informations mises à jour" });
+  } catch (err) {
+    return c.json({ message: "Erreur serveur", error: err.message }, 500);
   }
 }

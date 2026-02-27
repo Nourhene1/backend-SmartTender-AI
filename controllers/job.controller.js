@@ -16,24 +16,17 @@ import {
   reactivateJobOffer,
   JOB_STATUS,
   findPublicJobOffers,
-  findValidatedJobOffers,
 } from "../models/job.model.js";
 
-import { deleteQuizByJobId } from "../models/quizModel.js";
 import { findUserById } from "../models/user.model.js";
 import { getDB } from "../models/db.js";
 import { ObjectId } from "mongodb";
-import {
-  sendNewJobNotificationEmail,
-  sendJobConfirmedEmail,
-  sendJobRejectedEmail,
-} from "../services/mail.service.js";
+
 import {
   createNotificationForAdmins,
   createNotification,
   NOTIFICATION_TYPES,
 } from "../models/Notification.model.js";
-import { autoGenerateQuiz } from "../controllers/quiz.controller.js";
 import { Buffer } from "buffer";
 
 /* ===========================
@@ -46,7 +39,6 @@ import crypto from "crypto";
  * Clamp score value between 0 and 100
  */
 
-import { findMyJobOffersWithoutQuiz } from "../models/job.model.js";
 
 function getUserIdFromContext(c) {
   const u = c.get?.("user");
@@ -57,24 +49,7 @@ function getUserIdFromContext(c) {
   return direct ? String(direct) : "";
 }
 
-/**
- * ✅ GET /jobs/without-quiz
- * Retourne les jobs du user qui n'ont pas de quiz ACTIVE
- */
-export async function getMyJobsWithoutQuiz(c) {
-  try {
-    const userId = getUserIdFromContext(c);
-    if (!userId || !ObjectId.isValid(userId)) {
-      return c.json({ message: "Non authentifié" }, 401);
-    }
 
-    const jobs = await findMyJobOffersWithoutQuiz(userId);
-    return c.json(jobs, 200);
-  } catch (err) {
-    console.error("getMyJobsWithoutQuiz error:", err);
-    return c.json({ message: "Erreur serveur" }, 500);
-  }
-}
 function clampScore(v) {
   const n = Number(v);
   if (Number.isNaN(n)) return 0;
@@ -335,8 +310,9 @@ export async function createJob(c) {
     }
 
     const scores = normalizeScores(body.scores);
-    const isAdmin = existingUser.role === "ADMIN";
-    const status = isAdmin ? JOB_STATUS.CONFIRMEE : JOB_STATUS.EN_ATTENTE;
+
+    // ✅ Admin crée directement en CONFIRMEE (publié)
+    const status = JOB_STATUS.CONFIRMEE;
 
     // ✅ AJOUT: champs optionnels envoyés au model
     const result = await createJobOffer({
@@ -349,7 +325,6 @@ export async function createJob(c) {
       scores,
       status,
       createdBy: userId,
-      generateQuiz: body.generateQuiz !== false,
       numQuestions:
         typeof body.numQuestions === "number" &&
         body.numQuestions >= 1 &&
@@ -365,62 +340,9 @@ export async function createJob(c) {
       typeDiplome: body.typeDiplome,
     });
 
-    const message = isAdmin
-      ? "Offre créée et publiée avec succès"
-      : "Offre créée avec succès. En attente de confirmation par l'administrateur.";
+    const message = "Offre créée et publiée avec succès";
 
-    if (!isAdmin) {
-      try {
-        const creatorFullName =
-          [existingUser.prenom, existingUser.nom].filter(Boolean).join(" ") ||
-          existingUser.email;
-
-        await createNotificationForAdmins({
-          type: NOTIFICATION_TYPES.NEW_JOB_PENDING,
-          message: `Nouvelle offre "${body.titre}" créée par ${creatorFullName}`,
-          link: `/recruiter/jobs`,
-          metadata: {
-            jobId: result.insertedId.toString(),
-            jobTitle: body.titre,
-            creatorName: creatorFullName,
-          },
-        });
-
-        const admins = await getDB()
-          .collection("users")
-          .find({ role: "ADMIN" })
-          .project({ email: 1 })
-          .toArray();
-
-        const adminEmails = admins.map((a) => a.email).filter(Boolean);
-
-        if (adminEmails.length > 0) {
-          await sendNewJobNotificationEmail(adminEmails.join(","), {
-            jobId: result.insertedId.toString(),
-            jobTitle: body.titre,
-            creatorName: creatorFullName,
-            creatorEmail: existingUser.email,
-          });
-        }
-      } catch (emailErr) {
-        console.error("⚠️ Erreur envoi notification admin:", emailErr.message);
-      }
-    }
-
-    const shouldGenerateQuiz = isAdmin && body.generateQuiz !== false;
-
-    if (shouldGenerateQuiz) {
-      const numQuestions =
-        typeof body.numQuestions === "number" &&
-        body.numQuestions >= 1 &&
-        body.numQuestions <= 30
-          ? body.numQuestions
-          : 25;
-
-      autoGenerateQuiz(result.insertedId.toString(), numQuestions).catch((err) =>
-        console.error("⚠️ Auto quiz generation failed:", err.message)
-      );
-    }
+    
 
     return c.json({ id: result.insertedId.toString(), status, message }, 201);
   } catch (err) {
@@ -497,39 +419,12 @@ export async function confirmJob(c) {
       return c.json({ message: "Offre non trouvée" }, 404);
     }
 
-    // ⛔ doit être VALIDEE avant confirmation
-    if (job.status !== JOB_STATUS.VALIDEE) {
-      return c.json(
-        { message: "L'offre doit être validée (étape 1) avant publication" },
-        400
-      );
+    if (job.status === JOB_STATUS.CONFIRMEE) {
+      return c.json({ message: "L'offre est déjà publiée" }, 400);
     }
 
-    // ✅ ÉTAPE 2 : passage en CONFIRMEE (publique)
+    // ✅ Publication directe
     await updateJobOfferStatus(id, JOB_STATUS.CONFIRMEE, adminId);
-
-    // 🔔 Notification au responsable
-    try {
-      const assigned = Array.isArray(job.assignedUserIds)
-        ? job.assignedUserIds
-        : [];
-
-      for (const uid of assigned) {
-        await createNotification({
-          userId: uid.toString(),
-          type: NOTIFICATION_TYPES.JOB_CONFIRMED,
-          message: `Votre offre "${job.titre}" est publiée et visible pour les candidats.`,
-          link: `/ResponsableMetier/jobs`,
-          metadata: {
-            jobId: id,
-            jobTitle: job.titre,
-            step: "CONFIRMEE",
-          },
-        });
-      }
-    } catch (notifErr) {
-      console.error("⚠️ Erreur notification confirmation:", notifErr.message);
-    }
 
     return c.json(
       {
@@ -551,61 +446,6 @@ export async function confirmJob(c) {
   }
 }
 
-/* =========================================================
-   PUT /jobs/:id/reject
-========================================================= */
-export async function rejectJob(c) {
-  try {
-    const { id } = c.req.param();
-    const user = c.get("user");
-    const body = await c.req.json().catch(() => ({}));
-
-    if (!ObjectId.isValid(id)) {
-      return c.json({ message: "ID invalide" }, 400);
-    }
-
-    const job = await findJobOfferById(id);
-    if (!job) {
-      return c.json({ message: "Offre non trouvée" }, 404);
-    }
-
-    if (job.status === JOB_STATUS.REJETEE) {
-      return c.json({ message: "L'offre est déjà rejetée" }, 400);
-    }
-
-    const adminId = user._id || user.id;
-    await updateJobOfferStatus(id, JOB_STATUS.REJETEE, adminId);
-
-    try {
-      if (job.createdBy) {
-        const creator = await findUserById(job.createdBy.toString());
-        if (creator?.email) {
-          await sendJobRejectedEmail(creator.email, {
-            jobTitle: job.titre,
-            reason: body.reason || "",
-          });
-        }
-        await createNotification({
-          userId: job.createdBy.toString(),
-          type: NOTIFICATION_TYPES.JOB_REJECTED,
-          message: `Votre offre "${job.titre}" a été rejetée.`,
-          link: `/recruiter/jobs`,
-          metadata: { jobId: id, jobTitle: job.titre },
-        });
-      }
-    } catch (notifErr) {
-      console.error("⚠️ Erreur notification rejet:", notifErr.message);
-    }
-
-    return c.json({ message: "Offre rejetée", id }, 200);
-  } catch (err) {
-    console.error("❌ Reject job error:", err);
-    return c.json(
-      { message: "Erreur lors du rejet de l'offre", error: err.message },
-      500
-    );
-  }
-}
 
 /* =========================================================
    GET /jobs/:id
@@ -769,10 +609,9 @@ export async function deleteJob(c) {
       return c.json({ message: "Offre non trouvée" }, 404);
     }
 
-    await deleteQuizByJobId(id);
     await deleteJobOffer(id);
 
-    return c.json({ message: "Offre + quiz supprimés", id }, 200);
+    return c.json({ message: "Offre supprimée", id }, 200);
   } catch (err) {
     console.error("❌ Delete job error:", err);
     return c.json({ message: "Erreur suppression", error: err.message }, 500);
@@ -785,9 +624,9 @@ export async function deleteJob(c) {
 export async function getJobCount(c) {
   try {
     const count = await countJobOffers();
-    const pendingCount = await countJobOffersByStatus(JOB_STATUS.EN_ATTENTE);
+    const pendingCount = 0;
     const confirmedCount = await countJobOffersByStatus(JOB_STATUS.CONFIRMEE);
-    const rejectedCount = await countJobOffersByStatus(JOB_STATUS.REJETEE);
+    const rejectedCount = 0;
 
     return c.json({ count, pendingCount, confirmedCount, rejectedCount });
   } catch (err) {
@@ -861,7 +700,7 @@ export async function updateMyJob(c) {
       return c.json({ message: "Vous ne pouvez modifier que vos propres offres" }, 403);
     }
 
-    if (existingJob.status && existingJob.status !== JOB_STATUS.EN_ATTENTE) {
+    if (false) {
       return c.json(
         { message: "Vous ne pouvez modifier qu'une offre en attente de confirmation" },
         403
@@ -1003,439 +842,8 @@ export async function reactivateJob(c) {
   }
 }
 
-/* =========================================================
-   GET /linkedin/auth-url
-   Retourne l'URL OAuth LinkedIn à afficher côté front
-========================================================= */
-export async function linkedinAuthUrl(c) {
-  const user = c.get("user");
-  const userId = user?._id || user?.id;
-  if (!userId) return c.json({ message: "Non autorisé" }, 401);
 
-  // ✅ FIX: inclure jobId dans state pour rediriger vers la bonne page après OAuth
-  const returnJobId = c.req.query("returnJobId") || "";
-  const randomPart = crypto.randomBytes(16).toString("hex");
-  const state = returnJobId ? `${randomPart}__${returnJobId}` : randomPart;
 
-  const url = buildLinkedInAuthUrl({ state });
-  return c.json({ url });
-}
-
-/* =========================================================
-   GET /linkedin/callback?code=...
-   Échange le code OAuth contre un access token et sauvegarde
-========================================================= */
-export async function linkedinCallback(c) {
-  try {
-    // ⚠️ Note: LinkedIn redirige sans JWT, donc on ne peut pas utiliser authMiddleware
-    // Solution: récupérer le userId via le state (si stocké en session/DB)
-    // En développement simple, on utilise une autre méthode (voir ci-dessous)
-
-    const code = c.req.query("code");
-    const error = c.req.query("error");
-    const error_description = c.req.query("error_description");
-
-    if (error) {
-      const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
-      return c.redirect(
-        `${FRONTEND_URL}/recruiter/jobs?linkedin=error&reason=${encodeURIComponent(error_description || error)}`
-      );
-    }
-
-    if (!code) {
-      return c.json({ message: "Code OAuth manquant" }, 400);
-    }
-
-    const tokenData = await exchangeCodeForToken(code);
-    const accessToken = tokenData.access_token;
-    const expiresIn = Number(tokenData.expires_in || 0);
-    const expiresAt = Date.now() + expiresIn * 1000;
-
-    // ✅ Récupérer le memberId LinkedIn pour identifier l'utilisateur
-    const memberId = await getMemberId(accessToken);
-
-    // ✅ Trouver l'utilisateur en base via son linkedinMemberId (si déjà stocké)
-    // OU stocker le token de façon temporaire avec le memberId comme clé
-    // Ici on stocke dans une collection temporaire, le front devra ensuite appeler
-    // /linkedin/confirm-token avec son JWT pour lier le token à son compte
-    await getDB().collection("linkedin_tokens_pending").updateOne(
-      { memberId },
-      {
-        $set: {
-          accessToken,
-          expiresAt: new Date(expiresAt),
-          scope: tokenData.scope || "openid profile email w_member_social",
-          memberId,
-          updatedAt: new Date(),
-        },
-        $setOnInsert: { createdAt: new Date() },
-      },
-      { upsert: true }
-    );
-
-    // ✅ FIX: Extraire le jobId depuis le state pour rediriger vers la bonne page
-    const stateParam = c.req.query("state") || "";
-    const stateParts = stateParam.split("__");
-    const returnJobId = stateParts.length > 1 ? stateParts[1] : "";
-
-    const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
-    // Rediriger vers /recruiter/jobs/:id si jobId présent, sinon page liste
-    const redirectBase = returnJobId
-      ? `${FRONTEND_URL}/recruiter/jobs/${returnJobId}`
-      : `${FRONTEND_URL}/recruiter/jobs`;
-
-    return c.redirect(
-      `${redirectBase}?linkedin=connected&memberId=${memberId}`
-    );
-  } catch (err) {
-    console.error("❌ LinkedIn callback error:", err?.response?.data || err);
-    const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
-    return c.redirect(
-      `${FRONTEND_URL}/recruiter/jobs?linkedin=error&reason=${encodeURIComponent(err.message)}`
-    );
-  }
-}
-
-/* =========================================================
-   POST /linkedin/confirm-token
-   ✅ NOUVEAU: Lier le token LinkedIn pending à l'utilisateur connecté
-   Body: { memberId: string }
-   Le front appelle cet endpoint après le callback avec son JWT
-========================================================= */
-export async function linkedinConfirmToken(c) {
-  try {
-    const user = c.get("user");
-    const userId = user?._id || user?.id;
-    if (!userId) return c.json({ message: "Non autorisé" }, 401);
-
-    const body = await c.req.json();
-    const { memberId } = body;
-
-    if (!memberId) {
-      return c.json({ message: "memberId manquant" }, 400);
-    }
-
-    // Récupérer le token pending
-    const pending = await getDB()
-      .collection("linkedin_tokens_pending")
-      .findOne({ memberId });
-
-    if (!pending) {
-      return c.json(
-        {
-          message: "Token LinkedIn non trouvé. Reconnecte-toi via LinkedIn.",
-          code: "NEED_LINKEDIN_CONNECT",
-        },
-        404
-      );
-    }
-
-    // Vérifier non expiré
-    if (pending.expiresAt && new Date(pending.expiresAt).getTime() < Date.now()) {
-      return c.json(
-        {
-          message: "Token LinkedIn expiré. Reconnecte-toi.",
-          code: "LINKEDIN_TOKEN_EXPIRED",
-        },
-        401
-      );
-    }
-
-    // Sauvegarder le token lié à l'utilisateur
-    await saveLinkedInToken({
-      userId,
-      accessToken: pending.accessToken,
-      expiresAt: pending.expiresAt,
-      scope: pending.scope,
-    });
-
-    // Supprimer le pending
-    await getDB()
-      .collection("linkedin_tokens_pending")
-      .deleteOne({ memberId });
-
-    return c.json({ message: "LinkedIn connecté avec succès ✅", connected: true }, 200);
-  } catch (err) {
-    console.error("❌ LinkedIn confirm token error:", err);
-    return c.json(
-      { message: "Erreur liaison token LinkedIn", error: err.message },
-      500
-    );
-  }
-}
-
-/* =========================================================
-   ✅ NOUVEAU: GET /linkedin/status
-   Vérifier si l'utilisateur a un token LinkedIn valide
-   Retourne: { connected: boolean, expiresAt: string|null }
-========================================================= */
-/* =========================================================
-   ✅ NOUVEAU: POST /linkedin/exchange-code
-   Le FRONT appelle cet endpoint avec le code OAuth reçu de LinkedIn
-   (car LINKEDIN_REDIRECT_URI pointe vers le front, pas le backend)
-   Body: { code: string, state: string }
-   Retourne: { memberId: string }
-========================================================= */
-export async function linkedinExchangeCode(c) {
-  try {
-    const user = c.get("user");
-    const userId = user?._id || user?.id;
-    if (!userId) return c.json({ message: "Non autorisé" }, 401);
-
-    const body = await c.req.json().catch(() => ({}));
-    const { code, state } = body;
-
-    if (!code) return c.json({ message: "code OAuth manquant" }, 400);
-
-    // Échanger le code contre un access token
-    const tokenData = await exchangeCodeForToken(code);
-    const accessToken = tokenData.access_token;
-    const expiresIn = Number(tokenData.expires_in || 0);
-    const expiresAt = Date.now() + expiresIn * 1000;
-
-    // Récupérer le memberId LinkedIn
-    const memberId = await getMemberId(accessToken);
-    if (!memberId) return c.json({ message: "Impossible de récupérer le profil LinkedIn" }, 500);
-
-    // Sauvegarder directement le token lié à l'utilisateur (on a le JWT ici !)
-    await saveLinkedInToken({
-      userId,
-      accessToken,
-      expiresAt,
-      scope: tokenData.scope || "openid profile email w_member_social",
-    });
-
-    // Extraire le returnJobId depuis le state (format: random__jobId)
-    const stateParts = (state || "").split("__");
-    const returnJobId = stateParts.length > 1 ? stateParts[1] : null;
-
-    return c.json({
-      message: "LinkedIn connecté avec succès ✅",
-      connected: true,
-      memberId,
-      returnJobId,
-    });
-  } catch (err) {
-    console.error("❌ LinkedIn exchange-code error:", err?.response?.data || err);
-    return c.json(
-      { message: "Erreur échange code LinkedIn", error: err.message, details: err?.response?.data },
-      500
-    );
-  }
-}
-
-export async function linkedinStatus(c) {
-  try {
-    const user = c.get("user");
-    const userId = user?._id || user?.id;
-    if (!userId) return c.json({ message: "Non autorisé" }, 401);
-
-    const tokenDoc = await getLinkedInToken(userId);
-
-    if (!tokenDoc?.accessToken) {
-      return c.json({ connected: false, expiresAt: null });
-    }
-
-    // Vérifier expiration
-    if (tokenDoc.expiresAt && new Date(tokenDoc.expiresAt).getTime() < Date.now()) {
-      return c.json({
-        connected: false,
-        expiresAt: tokenDoc.expiresAt,
-        reason: "LINKEDIN_TOKEN_EXPIRED",
-      });
-    }
-
-    return c.json({
-      connected: true,
-      expiresAt: tokenDoc.expiresAt || null,
-    });
-  } catch (err) {
-    console.error("❌ LinkedIn status error:", err);
-    return c.json(
-      { message: "Erreur vérification statut LinkedIn", error: err.message },
-      500
-    );
-  }
-}
-
-/* =========================================================
-   POST /jobs/:id/publish-linkedin
-========================================================= */
-export async function publishJobToLinkedIn(c) {
-  try {
-    const user = c.get("user");
-    const userId = user?._id || user?.id;
-    if (!userId) return c.json({ message: "Non autorisé" }, 401);
-
-    const { id } = c.req.param();
-    if (!ObjectId.isValid(id)) {
-      return c.json({ message: "ID invalide" }, 400);
-    }
-
-    const job = await findJobOfferById(id);
-    if (!job) {
-      return c.json({ message: "Offre non trouvée" }, 404);
-    }
-
-    /* ===============================
-       🔐 TOKEN LINKEDIN
-    =============================== */
-    const tokenDoc = await getLinkedInToken(userId);
-    if (!tokenDoc?.accessToken) {
-      return c.json(
-        {
-          message: "LinkedIn non connecté. Veuillez vous connecter d'abord.",
-          code: "NEED_LINKEDIN_CONNECT",
-          connectUrl: "/linkedin/auth-url",
-        },
-        401
-      );
-    }
-
-    if (
-      tokenDoc.expiresAt &&
-      new Date(tokenDoc.expiresAt).getTime() < Date.now()
-    ) {
-      return c.json(
-        {
-          message: "Token LinkedIn expiré. Reconnecte-toi.",
-          code: "LINKEDIN_TOKEN_EXPIRED",
-          connectUrl: "/linkedin/auth-url",
-        },
-        401
-      );
-    }
-
-    /* ===============================
-       📦 LECTURE multipart/form-data
-       (texte + image)
-    =============================== */
-    const body = await c.req.parseBody();
-
-    const customText = safeStr(body?.text);
-    const imageFile = body?.image; // File | undefined
-
-    const text = customText || buildJobPostText(job);
-
-    /* ===============================
-       👤 LINKEDIN MEMBER ID (OIDC)
-    =============================== */
-    const memberId = await getMemberId(tokenDoc.accessToken);
-    if (!memberId) {
-      return c.json(
-        { message: "Impossible de récupérer le profil LinkedIn (userinfo)." },
-        500
-      );
-    }
-
-    /* ===============================
-       🚀 PUBLISH LINKEDIN
-       (avec / sans image)
-    =============================== */
-    const res = await publishMemberPost({
-      accessToken: tokenDoc.accessToken,
-      memberId,
-      text,
-      imageFile, // 👈 IMPORTANT
-    });
-    // res = { data, usedAuthor }
-
-    /* ===============================
-       💾 SAUVEGARDE DB
-    =============================== */
-    try {
-      await getDB().collection("job_offers").updateOne(
-        { _id: new ObjectId(id) },
-        {
-          $set: {
-            linkedinLastPostId: res?.data?.id || null,
-            linkedinLastPublishedAt: new Date(),
-            linkedinLastPublishedBy: new ObjectId(userId),
-            linkedinLastAuthor: res?.usedAuthor || null,
-          },
-        }
-      );
-    } catch (e) {
-      console.error(
-        "⚠️ Save LinkedIn publish info failed:",
-        e?.message || e
-      );
-      // on ne casse pas la publication si la sauvegarde échoue
-    }
-
-    return c.json(
-      {
-        message: "Offre publiée sur LinkedIn ✅",
-        post: res.data,
-        usedAuthor: res.usedAuthor,
-      },
-      200
-    );
-  } catch (err) {
-    console.error("❌ Publish LinkedIn error:", err?.response?.data || err);
-    return c.json(
-      {
-        message: "Erreur publication LinkedIn",
-        error: err.message,
-        details: err?.response?.data,
-      },
-      500
-    );
-  }
-}
-
-async function uploadImageToLinkedIn(accessToken, imageFile, ownerUrn) {
-  /* ===============================
-     1️⃣ Register upload
-  =============================== */
-  const registerRes = await axios.post(
-    "https://api.linkedin.com/v2/assets?action=registerUpload",
-    {
-      registerUploadRequest: {
-        owner: ownerUrn,
-        recipes: ["urn:li:digitalmediaRecipe:feedshare-image"],
-        serviceRelationships: [
-          {
-            relationshipType: "OWNER",
-            identifier: "urn:li:userGeneratedContent",
-          },
-        ],
-      },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-
-  const uploadUrl =
-    registerRes.data.value.uploadMechanism[
-      "com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest"
-    ].uploadUrl;
-
-  const assetUrn = registerRes.data.value.asset;
-
-  /* ===============================
-     2️⃣ CONVERT File -> Buffer 🔥
-  =============================== */
-  const arrayBuffer = await imageFile.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-
-  /* ===============================
-     3️⃣ Upload binary (CORRECT)
-  =============================== */
-  await axios.put(uploadUrl, buffer, {
-    headers: {
-      "Content-Type": imageFile.type || "image/png",
-      "Content-Length": buffer.length,
-    },
-    maxBodyLength: Infinity,
-  });
-
-  return assetUrn;
-}
 
 
 
@@ -1443,85 +851,3 @@ async function uploadImageToLinkedIn(accessToken, imageFile, ownerUrn) {
    GET /jobs/my-assigned
    Retourne les offres assignées à l'utilisateur connecté
 ========================================================= */
-export async function getMyAssignedJobs(c) {
-  try {
-    const user = c.get("user");
-    const userId = user?._id || user?.id;
-
-    if (!userId || !ObjectId.isValid(userId)) {
-      return c.json({ message: "ID utilisateur invalide" }, 400);
-    }
-
-    const jobs = await findJobOffersByUser(userId); // ✅ utilise assignedUserIds
-    return c.json(jobs);
-  } catch (err) {
-    console.error("❌ Get my assigned jobs error:", err);
-    return c.json(
-      { message: "Erreur lors de la récupération des offres assignées", error: err.message },
-      500
-    );
-  }
-}
-
-
-
-export async function validateJob(c) {
-  try {
-    const { id } = c.req.param();
-    const user = c.get("user");
-    const adminId = user?._id || user?.id;
-
-    if (!ObjectId.isValid(id)) {
-      return c.json({ message: "ID invalide" }, 400);
-    }
-
-    const job = await findJobOfferById(id);
-    if (!job) {
-      return c.json({ message: "Offre non trouvée" }, 404);
-    }
-
-    // ⛔ déjà validée ou confirmée
-    if (job.status !== JOB_STATUS.EN_ATTENTE) {
-      return c.json(
-        { message: "L’offre n’est plus en attente de validation" },
-        400
-      );
-    }
-
-    // ✅ ÉTAPE 1 : EN_ATTENTE → VALIDEE
-    await updateJobOfferStatus(id, JOB_STATUS.VALIDEE, adminId);
-
-    // 🔔 notification responsable
-    try {
-      const assigned = Array.isArray(job.assignedUserIds)
-        ? job.assignedUserIds
-        : [];
-
-      for (const uid of assigned) {
-        await createNotification({
-          userId: uid.toString(),
-          type: NOTIFICATION_TYPES.JOB_VALIDATED,
-          message: `Votre offre "${job.titre}" a été validée (étape 1).`,
-          link: `/ResponsableMetier/jobs`,
-          metadata: {
-            jobId: id,
-            step: "VALIDEE",
-          },
-        });
-      }
-    } catch (e) {
-      console.error("Notification validation échouée:", e.message);
-    }
-
-    return c.json(
-      { message: "Offre validée (étape 1)", id, status: JOB_STATUS.VALIDEE },
-      200
-    );
-  } catch (err) {
-    console.error("Validate job error:", err);
-    return c.json(
-      { message: "Erreur lors de la validation", error: err.message },
-      500
-    );
-  }
-}

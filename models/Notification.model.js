@@ -14,17 +14,6 @@ export const NOTIFICATION_TYPES = {
   JOB_CONFIRMED: "JOB_CONFIRMED",             // Offre confirmée par admin
   JOB_REJECTED: "JOB_REJECTED",               // Offre rejetée par admin
 
-  // ─── Entretiens ───
-  // Pour ResponsableMetier
-  INTERVIEW_SCHEDULED: "INTERVIEW_SCHEDULED",                     // Admin a planifié un entretien
-  INTERVIEW_CANDIDATE_CONFIRMED: "INTERVIEW_CANDIDATE_CONFIRMED", // Candidat a confirmé
-  INTERVIEW_ADMIN_APPROVED_MODIF: "INTERVIEW_ADMIN_APPROVED_MODIF",   // Admin a approuvé la modif
-  INTERVIEW_ADMIN_REJECTED_MODIF: "INTERVIEW_ADMIN_REJECTED_MODIF",   // Admin a refusé la modif
-
-  // Pour Admin
-  INTERVIEW_RESPONSABLE_CONFIRMED: "INTERVIEW_RESPONSABLE_CONFIRMED", // Responsable a confirmé la date
-  INTERVIEW_RESPONSABLE_MODIFIED: "INTERVIEW_RESPONSABLE_MODIFIED",   // Responsable demande modif date
-  INTERVIEW_CANDIDATE_RESCHEDULE: "INTERVIEW_CANDIDATE_RESCHEDULE",   // Candidat propose autre date
 };
 
 /**

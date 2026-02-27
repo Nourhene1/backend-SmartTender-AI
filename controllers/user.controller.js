@@ -148,38 +148,7 @@ export async function setupPassword(c) {
   }
 }
 
-/* =========================
-   ✅ VERIFY SETUP TOKEN (optionnel — pour le front)
-   Vérifie si un token est encore valide avant d'afficher le formulaire
-========================= */
-export async function verifySetupToken(c) {
-  try {
-    const token = c.req.query("token");
-    if (!token) {
-      return c.json({ valid: false, message: "Token manquant" }, 400);
-    }
 
-    const setupToken = await findValidSetupToken(token);
-    if (!setupToken) {
-      return c.json({ valid: false, message: "Lien invalide ou expiré" }, 400);
-    }
-
-    // Récupérer les infos de l'utilisateur pour afficher son nom
-    const user = await findUserById(setupToken.userId.toString());
-
-    return c.json({
-      valid: true,
-      user: {
-        email: user?.email,
-        nom: user?.nom,
-        prenom: user?.prenom,
-      },
-    });
-  } catch (err) {
-    console.error("VERIFY TOKEN ERROR:", err);
-    return c.json({ valid: false, message: "Erreur serveur" }, 500);
-  }
-}
 
 /* =========================
    LOGIN

@@ -52,10 +52,6 @@ export async function togglePreInterview(id) {
   }
 }
 
-/**
- * ✅ Récupérer tous les candidats pré-sélectionnés
- * ⚠️ jobOfferId est inclus dans la projection pour charger le quiz côté frontend
- */
 export async function getPreInterviewCandidatures() {
   return col()
     .aggregate([
@@ -82,7 +78,6 @@ export async function getPreInterviewCandidatures() {
           analysis: 1,
           preInterview: 1,
 
-          // ✅ AJOUTÉ — nécessaire pour charger le quiz technique de ce job
           jobOfferId: 1,
 
           jobTitle: "$job.titre",

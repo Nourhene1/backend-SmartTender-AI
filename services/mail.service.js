@@ -599,3 +599,44 @@ export async function sendSetPasswordEmail(to, { nom, prenom, link }) {
     throw error;
   }
 }
+// ✅ AJOUTER cette fonction dans ton fichier mail.service.js existant
+
+export async function sendCandidateWelcomeEmail(to, { fullName, email, password, loginUrl }) {
+  // Adapte "transporter" à ton setup nodemailer existant
+  await transporter.sendMail({
+    from:    `"SmartTender" <${process.env.MAIL_FROM}>`,
+    to,
+    subject: "✅ Votre espace candidat SmartTender",
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+        <div style="background:#6CB33F;padding:28px 32px;">
+          <h1 style="color:#fff;margin:0;font-size:22px;">Votre candidature a bien été reçue ✅</h1>
+        </div>
+        <div style="padding:32px;">
+          <p style="color:#374151;font-size:15px;margin-bottom:20px;">Bonjour <strong>${fullName}</strong>,</p>
+          <p style="color:#374151;font-size:14px;">
+            Votre candidature a été soumise avec succès. Un espace personnel vous a été créé pour suivre l'avancement de vos candidatures.
+          </p>
+
+          <div style="background:#F0FAF0;border:1px solid #D1FAE5;border-radius:10px;padding:20px;margin:24px 0;">
+            <p style="margin:0 0 8px 0;font-weight:bold;color:#065F46;font-size:14px;">Vos identifiants de connexion :</p>
+            <p style="margin:4px 0;color:#374151;font-size:14px;">📧 Email : <strong>${email}</strong></p>
+            <p style="margin:4px 0;color:#374151;font-size:14px;">🔑 Mot de passe : <strong style="font-family:monospace;background:#e5e7eb;padding:2px 8px;border-radius:4px;">${password}</strong></p>
+          </div>
+
+          <p style="color:#6B7280;font-size:13px;margin-bottom:24px;">
+            ⚠️ Pour votre sécurité, changez votre mot de passe lors de votre première connexion.
+          </p>
+
+          <a href="${loginUrl}" style="display:inline-block;background:#6CB33F;color:#fff;font-weight:bold;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:15px;">
+            Accéder à mon espace →
+          </a>
+
+          <p style="color:#9CA3AF;font-size:12px;margin-top:28px;">
+            SmartTender — Si vous n'êtes pas à l'origine de cette candidature, ignorez cet email.
+          </p>
+        </div>
+      </div>
+    `,
+  });
+}

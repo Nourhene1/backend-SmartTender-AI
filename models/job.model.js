@@ -1,15 +1,11 @@
 import { ObjectId } from "mongodb";
 import { getDB } from "./db.js";
-import { deleteQuizByJobId } from "./quizModel.js";
 
 const COLLECTION_NAME = "job_offers";
 const collection = () => getDB().collection(COLLECTION_NAME);
 
 export const JOB_STATUS = {
-  EN_ATTENTE: "EN_ATTENTE",   // créée
-  VALIDEE: "VALIDEE",         // validation interne admin
-  CONFIRMEE: "CONFIRMEE",     // publique + LinkedIn autorisé
-  REJETEE: "REJETEE",
+  CONFIRMEE: "CONFIRMEE",  // publique
 };
 function pickOptionalFields(obj) {
   const out = {};
@@ -37,7 +33,6 @@ export async function createJobOffer({
   status,
   createdBy,
   lieu = "",
-  generateQuiz = true,
   numQuestions = 25,
 
   // ✅ champs optionnels (root)
@@ -90,13 +85,9 @@ export async function createJobOffer({
     assignedUserIds: creatorId ? [creatorId] : [],
     createdBy: creatorId,
 
-    status: status || JOB_STATUS.EN_ATTENTE,
+    status: status || JOB_STATUS.CONFIRMEE,
 
-    generateQuiz: generateQuiz !== false,
-    numQuestions:
-      typeof numQuestions === "number" && numQuestions >= 1 && numQuestions <= 30
-        ? numQuestions
-        : 25,
+   
 
     // ✅ champs optionnels (sauvegardés si définis)
     ...normalizedOptionals,
@@ -195,7 +186,7 @@ export async function findPublicJobOffers() {
  */
 export async function findPendingJobOffers() {
   return collection()
-    .find({ status: JOB_STATUS.EN_ATTENTE })
+    .find({ status: JOB_STATUS.CONFIRMEE })
     .sort({ createdAt: -1 })
     .toArray();
 }
@@ -205,7 +196,7 @@ export async function findPendingJobOffers() {
  */
 export async function findValidatedJobOffers() {
   return collection()
-    .find({ status: JOB_STATUS.VALIDEE })
+    .find({ status: JOB_STATUS.CONFIRMEE })
     .sort({ createdAt: -1 })
     .toArray();
 }
@@ -235,19 +226,9 @@ export async function updateJobOfferStatus(id, status, actorId) {
   if (actorId) {
     const oid = typeof actorId === "string" ? new ObjectId(actorId) : actorId;
 
-    if (status === JOB_STATUS.VALIDEE) {
-      updateData.validatedBy = oid;
-      updateData.validatedAt = new Date();
-    }
-
-    if (status === JOB_STATUS.PUBLIEE || status === JOB_STATUS.CONFIRMEE) {
+    if (status === JOB_STATUS.CONFIRMEE) {
       updateData.publishedBy = oid;
       updateData.publishedAt = new Date();
-    }
-
-    if (status === JOB_STATUS.REJETEE) {
-      updateData.rejectedBy = oid;
-      updateData.rejectedAt = new Date();
     }
   }
 
@@ -371,49 +352,4 @@ export async function reactivateJobOffer(id, newDateCloture, reactivatedBy) {
       },
     }
   );
-}
-export async function findMyJobOffersWithoutQuiz(userId) {
-  if (!ObjectId.isValid(userId)) return [];
-
-  const uid = new ObjectId(userId);
-
-  return collection()
-    .aggregate([
-      // ✅ jobs accessibles par le user (créateur OU assigné)
-      {
-        $match: {
-          $or: [{ createdBy: uid }, { assignedUserIds: uid }],
-        },
-      },
-
-      // ✅ lookup quizzes ACTIVE liés à ce job
-      {
-        $lookup: {
-          from: "quizzes",
-          let: { jobId: "$_id" },
-          pipeline: [
-            {
-              $match: {
-                $expr: { $eq: ["$jobOfferId", "$$jobId"] },
-                status: "ACTIVE",
-              },
-            },
-            { $project: { _id: 1 } },
-            { $limit: 1 },
-          ],
-          as: "_quiz",
-        },
-      },
-
-      // ✅ garder seulement ceux sans quiz
-      {
-        $match: {
-          $expr: { $eq: [{ $size: "$_quiz" }, 0] },
-        },
-      },
-
-      { $project: { _quiz: 0 } },
-      { $sort: { createdAt: -1 } },
-    ])
-    .toArray();
 }

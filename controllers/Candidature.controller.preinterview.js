@@ -41,11 +41,6 @@ export async function togglePreInterviewController(c) {
   }
 }
 
-/**
- * GET /candidatures/pre-interview
- * Retourne la liste des candidats pré-sélectionnés pour entretien
- * Réservé aux admins
- */
 export async function getPreInterviewListController(c) {
   try {
     const list = await getPreInterviewCandidatures();

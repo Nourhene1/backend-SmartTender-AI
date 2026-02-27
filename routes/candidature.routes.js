@@ -8,27 +8,16 @@ import {
   updatePersonalInfo,
   getCandidaturesWithJob,
   getCandidaturesAnalysis,
-  sendFicheController,
   getMyCandidaturesUsers,
   getMatchingStatsController,
   getAcademicStatsController,
   getCandidatureById,
+  // ✅ FIX: importer depuis le controller principal (même collection tender_applications)
+  togglePreInterviewController,
+  getPreInterviewListController,
 } from "../controllers/candidature.controller.js";
 
-import {
-  getPreInterviewListController,
-  togglePreInterviewController,
-} from "../controllers/Candidature.controller.preinterview.js";
 
-// 🆕 Envoyer fiche + quiz au candidat
-import { sendDocumentsController } from "../controllers/Candidature.controller.senddocuments.js";
-import {
-  saveEntretienNoteController,
-  getEntretienNotesController,
-  getEntretienNoteByTypeController,
-  updateEntretienNoteController,
-  deleteEntretienNoteController,
-} from "../controllers/Candidature.entretien.controller.js";
 const router = new Hono();
 
 /* ================================================
@@ -38,39 +27,10 @@ const router = new Hono();
 
 // ...
 
-// GET
-router.get("/:id/entretien-notes", authMiddleware, getEntretienNotesController);
 
-// POST (create)
-router.post("/:id/entretien-note", authMiddleware, saveEntretienNoteController);
-
-// PATCH (update)
-router.patch(
-  "/:id/entretien-note/:noteId",
-  authMiddleware,
-  updateEntretienNoteController
-);
-
-// DELETE
-router.delete(
-  "/:id/entretien-note/:noteId",
-  authMiddleware,
-  deleteEntretienNoteController
-);
 
 
 router.post("/extract", authMiddleware, extractCandidature);
-
-// ملاحظة: إذا تحبها protected زيد authMiddleware/adminOnly حسب حاجتك
-router.post("/:candidatureId/send-form", sendFicheController);
-
-// 🆕 Envoyer fiche + quiz ensemble
-router.post(
-  "/:candidatureId/send-documents",
-  authMiddleware,
-  adminOnly,
-  sendDocumentsController
-);
 
 /* ===============================
    2️⃣ GET ROUTES SPÉCIFIQUES

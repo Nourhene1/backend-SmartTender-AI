@@ -9,21 +9,13 @@ import { serveStatic } from "@hono/node-server/serve-static";
 
 
 import userRoutes from "./routes/user.routes.js";
-import jobRoutes from "./routes/job.routes.js";
 import applicationRoutes from "./routes/application.routes.js";
 import candidatureRoutes from "./routes/candidature.routes.js";
-import RolesRoutes from "./routes/role.routes.js";
-import ficheRoutes from "./routes/fiche.routes.js";
-import ficheSubmissionRoutes from "./routes/ficheSubmission.routes.js";
-import interviewRoutes from "./routes/interview.routes.js";
-import quizRoutes from "./routes/quiz.routes.js";
+import tenderRouter   from "./routes/tender.routes.js";
+import documentRouter from "./routes/document.routes.js";
+
 import passwordRoutes from "./routes/password.routes.js";
 import notificationRoutes from "./routes/Notification.routes.js";
-import authMicrosoftRouter from "./routes/Authmicrosoft.route.js";
-import calendarRouter from "./routes/calendar.routes.js";
-import quizSubmissionRoutes from "./routes/Quizsubmission.routes.js";
-import linkedinRoutes from "./routes/linkedin.routes.js";
-import { startReminderCron } from "./jobs/reminder-cron.js";
 
 dotenv.config();
 
@@ -45,25 +37,20 @@ app.use("*", async (c, next) => {
   c.set("db", db);
   await next();
 });
-startReminderCron(db);
+app.route("/tenders",   tenderRouter);
+app.route("/documents", documentRouter);
 /* ================== ROUTES ================== */
 app.route("/users", userRoutes);
-app.route("/jobs", jobRoutes);
-app.route("/fiches", ficheRoutes);
-app.route("/api/interviews", interviewRoutes);
+
 app.use("/uploads/*", serveStatic({ root: "./" }));
-app.route("/fiche-submissions", ficheSubmissionRoutes);
 app.route("/candidatures", candidatureRoutes);
 app.route("/api", applicationRoutes);
-app.route("/roles", RolesRoutes);
 app.route("/notifications", notificationRoutes);
-app.route("/quizzes", quizRoutes);
-app.route("/password", passwordRoutes);
-app.route("/quiz-submissions", quizSubmissionRoutes);
 
-app.route("/api/auth/microsoft", authMicrosoftRouter);
-app.route("/api/calendar", calendarRouter);
-app.route("/linkedin", linkedinRoutes);
+app.route("/password", passwordRoutes);
+
+
+
 
 
 app.get("/", (c) => c.json({ status: "ok" }));

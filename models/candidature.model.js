@@ -569,9 +569,7 @@ export async function findCandidatureById(id) {
   return getDB().collection("candidatures").findOne({ _id: new ObjectId(id) });
 }
 
-export async function findFicheById(id) {
-  return col().findOne({ _id: new ObjectId(id) });
-}
+
 
 export async function getMyCandidaturesWithJob(userId) {
   const uid = new ObjectId(userId);
@@ -591,23 +589,11 @@ export async function getMyCandidaturesWithJob(userId) {
       // ✅ فقط العروض اللي user مكلّف بيها
       { $match: { "job.assignedUserIds": uid } },
 
-      // ✅ fiche submissions متاع هالقandidature
-      {
-        $lookup: {
-          from: "fiche_submissions",
-          localField: "_id",
-          foreignField: "candidatureId",
-          as: "ficheSubmission",
-        },
-      },
-      { $addFields: { ficheSubmission: { $arrayElemAt: ["$ficheSubmission", 0] } } },
 
       {
         $project: {
           _id: 1,
           createdAt: 1,
-
-          // ✅ CV + fiche renseignement raw الموجودة عندك
           cv: 1,
           personalInfoForm: 1,
           extracted: 1,
@@ -690,16 +676,6 @@ export async function getMyCandidaturesWithJob(userId) {
                 ],
               },
             ],
-          },
-
-          // ✅ fiche submission summary
-          fiche: {
-            _id: "$ficheSubmission._id",
-            ficheId: "$ficheSubmission.ficheId",
-            status: "$ficheSubmission.status",
-            startedAt: "$ficheSubmission.startedAt",
-            finishedAt: "$ficheSubmission.finishedAt",
-            answersCount: { $size: { $ifNull: ["$ficheSubmission.answers", []] } },
           },
         },
       },
