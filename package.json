@@ -1,0 +1,38 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon server.js",
+    "test": "cross-env NODE_ENV=test node --experimental-vm-modules node_modules/jest/bin/jest.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@azure/msal-node": "^5.0.4",
+    "@hono/node-server": "^1.19.7",
+    "axios": "^1.13.5",
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "graceful-fs": "^4.2.11",
+    "hono": "^4.11.3",
+    "jsonwebtoken": "^9.0.3",
+    "mongodb": "^7.0.0",
+    "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.13",
+    "pdfkit": "^0.17.2",
+    "vitest": "^4.0.18"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "jest": "^25.0.0",
+    "nodemon": "^3.1.11",
+    "supertest": "^6.3.4"
+  }
+}
