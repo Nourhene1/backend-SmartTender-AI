@@ -26,7 +26,7 @@ router.post("/logout", authMiddleware, logout);
 router.get("/", authMiddleware, getUsers);
 
 // ✅ Création par admin (sans mot de passe + envoi email)
-router.post("/admin/create", authMiddleware, adminOnly, createUserByAdmin);
+router.post("/admin/create", authMiddleware, createUserByAdmin);
 
 router.patch("/:id", authMiddleware, adminOnly, updateUserController);
 router.delete("/:id", authMiddleware, adminOnly, removeUser);
