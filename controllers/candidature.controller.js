@@ -241,6 +241,9 @@ export const confirmApplication = async (c) => {
     const mergedExtracted = { ...(doc.extracted || {}), ...(body?.extracted || {}) };
     if (body?.parsed) mergedExtracted.parsed = body.parsed;
 
+    // Récupérer le user authentifié pour sauvegarder son ID
+    const authUser = c.get("user");
+
     await applyCol().updateOne(
       { _id: new ObjectId(candidatureId) },
       {
@@ -249,6 +252,8 @@ export const confirmApplication = async (c) => {
           extracted:  mergedExtracted,
           status:     "SUBMITTED",
           updatedAt:  new Date(),
+          // ✅ Sauvegarder l'userId pour retrouver les candidatures par user
+          ...(authUser?.id ? { userId: authUser.id.toString() } : {}),
         },
       }
     );
@@ -534,11 +539,31 @@ export async function getMyCandidaturesUsers(c) {
   try {
     const user = c.get("user");
     if (!user?.id) return c.json({ message: "Non authentifié" }, 401);
-    const docs = user.email
-      ? await applyCol().find({ email: user.email }).sort({ createdAt: -1 }).toArray()
-      : [];
+
+    if (!user.email) return c.json([]);
+
+    const emailLower = user.email.toLowerCase().trim();
+
+    // ✅ Recherche insensible à la casse
+    const docs = await applyCol()
+      .find({
+        email: { $regex: `^${emailLower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    // ✅ Fallback par userId si rien trouvé par email
+    if (docs.length === 0 && user.id) {
+      const byUserId = await applyCol()
+        .find({ userId: user.id.toString() })
+        .sort({ createdAt: -1 })
+        .toArray();
+      return c.json(byUserId);
+    }
+
     return c.json(docs);
   } catch (err) {
+    console.error("❌ getMyCandidaturesUsers error:", err);
     return c.json({ message: "Erreur serveur", error: err.message }, 500);
   }
 }
