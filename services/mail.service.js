@@ -20,14 +20,59 @@ export function generateResetCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-/* =========================
-   SEND RESET CODE EMAIL
-========================= */
+
+
+
+
+
+export async function sendCandidateWelcomeEmail(to, { fullName, email, password, loginUrl }) {
+  // Adapte "transporter" à ton setup nodemailer existant
+  await transporter.sendMail({
+    from: `SmartTender <${process.env.MAIL_FROM}>`,
+    to,
+    subject: "✅ Votre espace candidat SmartTender",
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+        <div style="background:#6CB33F;padding:28px 32px;">
+          <h1 style="color:#fff;margin:0;font-size:22px;">Votre candidature a bien été reçue ✅</h1>
+        </div>
+        <div style="padding:32px;">
+          <p style="color:#374151;font-size:15px;margin-bottom:20px;">Bonjour <strong>${fullName}</strong>,</p>
+          <p style="color:#374151;font-size:14px;">
+            Votre candidature a été soumise avec succès. Un espace personnel vous a été créé pour suivre l'avancement de vos candidatures.
+          </p>
+
+          <div style="background:#F0FAF0;border:1px solid #D1FAE5;border-radius:10px;padding:20px;margin:24px 0;">
+            <p style="margin:0 0 8px 0;font-weight:bold;color:#065F46;font-size:14px;">Vos identifiants de connexion :</p>
+            <p style="margin:4px 0;color:#374151;font-size:14px;">📧 Email : <strong>${email}</strong></p>
+            <p style="margin:4px 0;color:#374151;font-size:14px;">🔑 Mot de passe : <strong style="font-family:monospace;background:#e5e7eb;padding:2px 8px;border-radius:4px;">${password}</strong></p>
+          </div>
+
+          <p style="color:#6B7280;font-size:13px;margin-bottom:24px;">
+            ⚠️ Pour votre sécurité, changez votre mot de passe lors de votre première connexion.
+          </p>
+
+          <a href="${loginUrl}" style="display:inline-block;background:#6CB33F;color:#fff;font-weight:bold;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:15px;">
+            Accéder à mon espace →
+          </a>
+
+          <p style="color:#9CA3AF;font-size:12px;margin-top:28px;">
+            SmartTender — Si vous n'êtes pas à l'origine de cette candidature, ignorez cet email.
+          </p>
+        </div>
+      </div>
+    `,
+  });
+}
+
+
+
+
 export async function sendResetCodeEmail(to, code) {
   const mailOptions = {
-    from: `"Optylab RH" <${process.env.MAIL_USER}>`,
+    from: `SmartTender IA RH <${process.env.MAIL_USER}>`,
     to,
-    subject: "Code de réinitialisation de mot de passe - Optylab",
+    subject: "Code de réinitialisation de mot de passe - SmartTender IA ",
     html: `
       <!DOCTYPE html>
       <html>
@@ -44,7 +89,7 @@ export async function sendResetCodeEmail(to, code) {
                 <!-- Header -->
                 <tr>
                   <td style="background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-                    <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Optylab</h1>
+                    <h1 style="color: #ffffff; margin: 0; font-size: 28px;">SmartTender IA </h1>
                     <p style="color: #e8f5e9; margin: 10px 0 0 0; font-size: 14px;">Plateforme RH Intelligente</p>
                   </td>
                 </tr>
@@ -82,7 +127,7 @@ export async function sendResetCodeEmail(to, code) {
                 <tr>
                   <td style="background-color: #f8f9fa; padding: 20px 30px; text-align: center; border-radius: 0 0 10px 10px; border-top: 1px solid #eeeeee;">
                     <p style="color: #999999; font-size: 12px; margin: 0;">
-                      © ${new Date().getFullYear()} Optylab - Tous droits réservés
+                      © ${new Date().getFullYear()} SmartTender IA  - Tous droits réservés
                     </p>
                     <p style="color: #bbbbbb; font-size: 11px; margin: 10px 0 0 0;">
                       Cet email a été envoyé automatiquement, merci de ne pas y répondre.
@@ -98,7 +143,7 @@ export async function sendResetCodeEmail(to, code) {
       </html>
     `,
     text: `
-      Optylab - Réinitialisation de mot de passe
+      SmartTender IA  - Réinitialisation de mot de passe
       
       Bonjour,
       
@@ -110,7 +155,7 @@ export async function sendResetCodeEmail(to, code) {
       
       Si vous n'avez pas demandé cette réinitialisation, ignorez cet email.
       
-      © ${new Date().getFullYear()} Optylab
+      © ${new Date().getFullYear()} SmartTender IA 
     `,
   };
 
@@ -124,370 +169,13 @@ export async function sendResetCodeEmail(to, code) {
   }
 }
 
-/* =========================
-   SEND NEW JOB NOTIFICATION TO ADMIN
-   ✅ Notifie l'admin qu'une nouvelle offre a été créée par un utilisateur
-========================= */
-export async function sendNewJobNotificationEmail(
-  to,
-  { jobId, jobTitle, creatorName, creatorEmail }
-) {
-  const frontUrl = process.env.FRONT_URL;
-  const jobLink = `${frontUrl}/recruiter/jobs/${jobId}`;
-
-  const mailOptions = {
-    from: `"Optylab RH" <${process.env.MAIL_USER}>`,
-    to,
-    subject: `Nouvelle offre d'emploi à confirmer - ${jobTitle}`,
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f4;">
-        <table role="presentation" style="width: 100%; border-collapse: collapse;">
-          <tr>
-            <td align="center" style="padding: 40px 0;">
-              <table role="presentation" style="width: 600px; border-collapse: collapse; background-color: #ffffff; border-radius: 10px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-
-                <!-- Header (vert) -->
-                <tr>
-                  <td style="background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-                    <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Optylab</h1>
-                    <p style="color: #e8f5e9; margin: 10px 0 0 0; font-size: 14px;">Plateforme RH Intelligente</p>
-                  </td>
-                </tr>
-
-                <!-- Content -->
-                <tr>
-                  <td style="padding: 40px 30px;">
-                    <h2 style="color: #333333; margin: 0 0 20px 0; font-size: 22px;">
-                      Nouvelle offre d'emploi à confirmer
-                    </h2>
-
-                    <p style="color: #666666; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                      Bonjour Admin,
-                    </p>
-
-                    <p style="color: #666666; font-size: 16px; line-height: 1.6; margin: 0 0 18px 0;">
-                      Une nouvelle offre d'emploi a été créée et nécessite votre confirmation.
-                    </p>
-
-                    <!-- Infos (texte simple, sans card/border couleur) -->
-                    <p style="color:#888888; font-size: 13px; margin: 18px 0 4px 0;">Titre de l'offre :</p>
-                    <p style="color:#333333; font-size: 16px; font-weight: 600; margin: 0 0 12px 0;">${jobTitle}</p>
-
-                    <p style="color:#888888; font-size: 13px; margin: 12px 0 4px 0;">Créée par :</p>
-                    <p style="color:#333333; font-size: 15px; margin: 0 0 10px 0;">${creatorName}</p>
-
-                    <p style="color:#888888; font-size: 13px; margin: 12px 0 4px 0;">Email :</p>
-                    <p style="color:#333333; font-size: 15px; margin: 0 0 18px 0;">${creatorEmail}</p>
-
-                    <!-- CTA Button (vert) -->
-                    <div style="text-align: center; margin: 30px 0;">
-                      <a href="${jobLink}" style="display: inline-block; background: linear-gradient(135deg, #4CAF50 0%, #388E3C 100%); color: #ffffff; text-decoration: none; padding: 14px 40px; border-radius: 8px; font-size: 16px; font-weight: bold;">
-                        Voir l'offre
-                      </a>
-                    </div>
-
-                    <p style="color: #999999; font-size: 13px; line-height: 1.6; margin: 20px 0 0 0; text-align: center;">
-                      Ou copiez ce lien : <a href="${jobLink}" style="color: #4CAF50;">${jobLink}</a>
-                    </p>
-                  </td>
-                </tr>
-
-                <!-- Footer (inchangé) -->
-                <tr>
-                  <td style="background-color: #f8f9fa; padding: 20px 30px; text-align: center; border-radius: 0 0 10px 10px; border-top: 1px solid #eeeeee;">
-                    <p style="color: #999999; font-size: 12px; margin: 0;">
-                      © ${new Date().getFullYear()} Optylab - Tous droits réservés
-                    </p>
-                    <p style="color: #bbbbbb; font-size: 11px; margin: 10px 0 0 0;">
-                      Cet email a été envoyé automatiquement, merci de ne pas y répondre.
-                    </p>
-                  </td>
-                </tr>
-
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-      </html>
-    `,
-    text: `
-Optylab - Nouvelle offre d'emploi à confirmer
-
-Bonjour Admin,
-
-Une nouvelle offre d'emploi a été créée et nécessite votre confirmation.
-
-Titre : ${jobTitle}
-Créée par : ${creatorName}
-Email : ${creatorEmail}
-
-Voir l'offre : ${jobLink}
-
-© ${new Date().getFullYear()} Optylab
-    `,
-  };
-
-  try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log("Notification admin envoyée:", info.messageId);
-    return { success: true, messageId: info.messageId };
-  } catch (error) {
-    console.error("Erreur envoi notification admin:", error);
-    throw error;
-  }
-}
-
-/* =========================
-   SEND JOB CONFIRMED EMAIL TO OWNER
-   ✅ Notifie le créateur que son offre a été confirmée
-========================= */
-export async function sendJobConfirmedEmail(to, { jobId, jobTitle, ownerName }) {
-  const frontUrl = process.env.FRONT_URL;
-  const loginLink = `${frontUrl}/login`;
-
-  const mailOptions = {
-    from: `"Optylab RH" <${process.env.MAIL_USER}>`,
-    to,
-    subject: `Votre offre "${jobTitle}" a été confirmée - Optylab`,
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f4;">
-        <table role="presentation" style="width: 100%; border-collapse: collapse;">
-          <tr>
-            <td align="center" style="padding: 40px 0;">
-              <table role="presentation" style="width: 600px; border-collapse: collapse; background-color: #ffffff; border-radius: 10px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-                
-                <!-- Header -->
-                <tr>
-                 <td style="background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-                    <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Optylab</h1>
-                    <p style="color: #e8f5e9; margin: 10px 0 0 0; font-size: 14px;">Plateforme RH Intelligente</p>
-                  </td>
-                </tr>
-                
-                <!-- Content -->
-                <tr>
-                  <td style="padding: 40px 30px;">
-              
-                    <h2 style="color: #333333; margin: 0 0 20px 0; font-size: 22px; text-align: center;">Offre confirmée !</h2>
-                    
-                    <p style="color: #666666; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                      Bonjour ${ownerName},
-                    </p>
-                    
-                    <p style="color: #666666; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                      Bonne nouvelle ! Votre offre d'emploi a été <strong style="color: #4CAF50;">confirmée</strong> par l'administrateur et est maintenant visible publiquement.
-                    </p>
-                    
-                  <p style="color:#888888; font-size:13px; margin:20px 0 4px 0;">
-  Titre de l'offre :
-</p>
-<p style="color:#333333; font-size:16px; font-weight:600; margin:0 0 20px 0;">
-  ${jobTitle}
-</p>
-                    
-                    <!-- CTA Button -->
-                    <div style="text-align: center; margin: 30px 0;">
-                      <a href="${loginLink}" style="display: inline-block; background: linear-gradient(135deg, #4CAF50 0%, #388E3C 100%); color: #ffffff; text-decoration: none; padding: 14px 40px; border-radius: 8px; font-size: 16px; font-weight: bold;">
-                        Voir mon offre
-                      </a>
-                    </div>
-                    
-                    <p style="color: #999999; font-size: 13px; line-height: 1.6; margin: 20px 0 0 0; text-align: center;">
-                      Ou copiez ce lien : <a href="${loginLink}" style="color: #4CAF50;">${loginLink}</a>
-                    </p>
-                  </td>
-                </tr>
-                
-                <!-- Footer -->
-                <tr>
-                  <td style="background-color: #f8f9fa; padding: 20px 30px; text-align: center; border-radius: 0 0 10px 10px; border-top: 1px solid #eeeeee;">
-                    <p style="color: #999999; font-size: 12px; margin: 0;">
-                      © ${new Date().getFullYear()} Optylab - Tous droits réservés
-                    </p>
-                    <p style="color: #bbbbbb; font-size: 11px; margin: 10px 0 0 0;">
-                      Cet email a été envoyé automatiquement, merci de ne pas y répondre.
-                    </p>
-                  </td>
-                </tr>
-                
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-      </html>
-    `,
-    text: `
-      Optylab - Offre confirmée
-
-      Bonjour ${ownerName},
-
-      Bonne nouvelle ! Votre offre d'emploi "${jobTitle}" a été confirmée par l'administrateur et est maintenant visible publiquement.
-
-      Voir votre offre : ${loginLink}
-
-      © ${new Date().getFullYear()} Optylab
-    `,
-  };
-
-  try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log("📧 Email confirmation offre envoyé:", info.messageId);
-    return { success: true, messageId: info.messageId };
-  } catch (error) {
-    console.error("❌ Erreur envoi email confirmation offre:", error);
-    throw error;
-  }
-}
-
-/* =========================
-   SEND JOB REJECTED EMAIL TO OWNER
-   ✅ Notifie le créateur que son offre a été rejetée
-========================= */
-export async function sendJobRejectedEmail(to, { jobId, jobTitle, ownerName, reason }) {
-  const frontUrl = process.env.FRONT_URL;
-  const loginLink = `${frontUrl}/login`;
-
-  const reasonHtml = reason
-    ? `
-      <p style="color:#888888; font-size:13px; margin:16px 0 4px 0;">Raison du rejet :</p>
-      <p style="color:#333333; font-size:15px; margin:0 0 12px 0;">${reason}</p>
-    `
-    : "";
-
-  const reasonText = reason ? `\nRaison : ${reason}\n` : "\n";
-
-  const mailOptions = {
-    from: `"Optylab RH" <${process.env.MAIL_USER}>`,
-    to,
-    subject: `Votre offre "${jobTitle}" a été rejetée - Optylab`,
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      </head>
-      <body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f4;">
-        <table role="presentation" style="width: 100%; border-collapse: collapse;">
-          <tr>
-            <td align="center" style="padding: 40px 0;">
-              <table role="presentation" style="width: 600px; border-collapse: collapse; background-color: #ffffff; border-radius: 10px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-                
-                <!-- Header (vert) -->
-                <tr>
-                 <td style="background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-                    <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Optylab</h1>
-                    <p style="color: #e8f5e9; margin: 10px 0 0 0; font-size: 14px;">Plateforme RH Intelligente</p>
-                  </td>
-                </tr>
-                
-                <!-- Content -->
-                <tr>
-                  <td style="padding: 40px 30px;">
-                    
-                    <h2 style="color: #333333; margin: 0 0 20px 0; font-size: 22px; text-align: center;">
-                      Offre rejetée
-                    </h2>
-                    
-                    <p style="color: #666666; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                      Bonjour,
-                    </p>
-                    
-                    <p style="color: #666666; font-size: 16px; line-height: 1.6; margin: 0 0 16px 0;">
-                      Nous vous informons que votre offre d'emploi a été <strong>rejetée</strong> par l'administrateur.
-                    </p>
-
-                    <!-- Job title (simple text, no card) -->
-                    <p style="color:#888888; font-size:13px; margin:20px 0 4px 0;">Titre de l'offre :</p>
-                    <p style="color:#333333; font-size:16px; font-weight:600; margin:0 0 12px 0;">${jobTitle}</p>
-
-                    ${reasonHtml}
-
-                    <p style="color: #666666; font-size: 16px; line-height: 1.6; margin: 18px 0 0 0;">
-                      Vous pouvez modifier votre offre et la resoumettre depuis votre espace personnel après connexion.
-                    </p>
-                    
-                    <!-- CTA Button (lien vert vers login) -->
-                    <div style="text-align: center; margin: 30px 0;">
-                      <a href="${loginLink}" style="display: inline-block; background: linear-gradient(135deg, #4CAF50 0%, #388E3C 100%); color: #ffffff; text-decoration: none; padding: 14px 40px; border-radius: 8px; font-size: 16px; font-weight: bold;">
-                        Se connecter
-                      </a>
-                    </div>
-
-                    <p style="color: #999999; font-size: 13px; line-height: 1.6; margin: 20px 0 0 0; text-align: center;">
-                      Ou copiez ce lien : <a href="${loginLink}" style="color: #4CAF50;">${loginLink}</a>
-                    </p>
-                  </td>
-                </tr>
-                
-                <!-- Footer (comme email précédent) -->
-                <tr>
-                  <td style="background-color: #f8f9fa; padding: 20px 30px; text-align: center; border-radius: 0 0 10px 10px; border-top: 1px solid #eeeeee;">
-                    <p style="color: #999999; font-size: 12px; margin: 0;">
-                      © ${new Date().getFullYear()} Optylab - Tous droits réservés
-                    </p>
-                    <p style="color: #bbbbbb; font-size: 11px; margin: 10px 0 0 0;">
-                      Cet email a été envoyé automatiquement, merci de ne pas y répondre.
-                    </p>
-                  </td>
-                </tr>
-                
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-      </html>
-    `,
-    text: `
-Optylab - Offre rejetée
-
-Bonjour,
-
-Votre offre "${jobTitle}" a été rejetée par l'administrateur.
-${reasonText}
-Veuillez vous connecter pour accéder à votre espace et modifier l'offre : ${loginLink}
-
-© ${new Date().getFullYear()} Optylab
-    `,
-  };
-
-  try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log("Email rejet offre envoyé:", info.messageId); // ✅ sans emoji
-    return { success: true, messageId: info.messageId };
-  } catch (error) {
-    console.error("Erreur envoi email rejet offre:", error); // ✅ sans emoji
-    throw error;
-  }
-}
-
-/* =========================
-   ✅ SEND SET PASSWORD EMAIL
-   Envoyé lors de la création d'un utilisateur par l'admin
-   L'utilisateur clique sur le lien pour définir son mot de passe
-========================= */
 export async function sendSetPasswordEmail(to, { nom, prenom, link }) {
   const fullName = [prenom, nom].filter(Boolean).join(" ") || to;
 
   const mailOptions = {
-    from: `"Optylab RH" <${process.env.MAIL_USER}>`,
+    from: "SmartTender IA <${process.env.MAIL_USER}>",
     to,
-    subject: "Bienvenue sur Optylab – Activez votre compte",
+    subject: "Bienvenue sur SmartTender IA  – Activez votre compte",
     html: `
       <!DOCTYPE html>
       <html>
@@ -504,7 +192,7 @@ export async function sendSetPasswordEmail(to, { nom, prenom, link }) {
                 <!-- Header -->
                 <tr>
                   <td style="background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-                    <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Optylab</h1>
+                    <h1 style="color: #ffffff; margin: 0; font-size: 28px;">SmartTender IA </h1>
                     <p style="color: #e8f5e9; margin: 10px 0 0 0; font-size: 14px;">Plateforme RH Intelligente</p>
                   </td>
                 </tr>
@@ -523,7 +211,7 @@ export async function sendSetPasswordEmail(to, { nom, prenom, link }) {
                     </p>
 
                     <p style="color: #666666; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                      Un compte a été créé pour vous sur la plateforme <strong>Optylab RH</strong>.
+                      Un compte a été créé pour vous sur la plateforme <strong>SmartTender IA  RH</strong>.
                       Pour l'activer et définir votre mot de passe, cliquez sur le bouton ci-dessous :
                     </p>
                     
@@ -560,7 +248,7 @@ export async function sendSetPasswordEmail(to, { nom, prenom, link }) {
                 <tr>
                   <td style="background-color: #f8f9fa; padding: 20px 30px; text-align: center; border-radius: 0 0 10px 10px; border-top: 1px solid #eeeeee;">
                     <p style="color: #999999; font-size: 12px; margin: 0;">
-                      © ${new Date().getFullYear()} Optylab - Tous droits réservés
+                      © ${new Date().getFullYear()} SmartTender IA  - Tous droits réservés
                     </p>
                     <p style="color: #bbbbbb; font-size: 11px; margin: 10px 0 0 0;">
                       Cet email a été envoyé automatiquement, merci de ne pas y répondre.
@@ -576,17 +264,17 @@ export async function sendSetPasswordEmail(to, { nom, prenom, link }) {
       </html>
     `,
     text: `
-      Optylab – Activation de compte
+      SmartTender IA  – Activation de compte
 
       Bonjour ${fullName},
 
-      Un compte a été créé pour vous sur Optylab RH.
+      Un compte a été créé pour vous sur SmartTender IA  RH.
       Définissez votre mot de passe via ce lien (valable 48h) :
       ${link}
 
       Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.
 
-      © ${new Date().getFullYear()} Optylab
+      © ${new Date().getFullYear()} SmartTender IA 
     `,
   };
 
@@ -599,44 +287,4 @@ export async function sendSetPasswordEmail(to, { nom, prenom, link }) {
     throw error;
   }
 }
-// ✅ AJOUTER cette fonction dans ton fichier mail.service.js existant
 
-export async function sendCandidateWelcomeEmail(to, { fullName, email, password, loginUrl }) {
-  // Adapte "transporter" à ton setup nodemailer existant
-  await transporter.sendMail({
-    from:    `"SmartTender" <${process.env.MAIL_FROM}>`,
-    to,
-    subject: "✅ Votre espace candidat SmartTender",
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
-        <div style="background:#6CB33F;padding:28px 32px;">
-          <h1 style="color:#fff;margin:0;font-size:22px;">Votre candidature a bien été reçue ✅</h1>
-        </div>
-        <div style="padding:32px;">
-          <p style="color:#374151;font-size:15px;margin-bottom:20px;">Bonjour <strong>${fullName}</strong>,</p>
-          <p style="color:#374151;font-size:14px;">
-            Votre candidature a été soumise avec succès. Un espace personnel vous a été créé pour suivre l'avancement de vos candidatures.
-          </p>
-
-          <div style="background:#F0FAF0;border:1px solid #D1FAE5;border-radius:10px;padding:20px;margin:24px 0;">
-            <p style="margin:0 0 8px 0;font-weight:bold;color:#065F46;font-size:14px;">Vos identifiants de connexion :</p>
-            <p style="margin:4px 0;color:#374151;font-size:14px;">📧 Email : <strong>${email}</strong></p>
-            <p style="margin:4px 0;color:#374151;font-size:14px;">🔑 Mot de passe : <strong style="font-family:monospace;background:#e5e7eb;padding:2px 8px;border-radius:4px;">${password}</strong></p>
-          </div>
-
-          <p style="color:#6B7280;font-size:13px;margin-bottom:24px;">
-            ⚠️ Pour votre sécurité, changez votre mot de passe lors de votre première connexion.
-          </p>
-
-          <a href="${loginUrl}" style="display:inline-block;background:#6CB33F;color:#fff;font-weight:bold;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:15px;">
-            Accéder à mon espace →
-          </a>
-
-          <p style="color:#9CA3AF;font-size:12px;margin-top:28px;">
-            SmartTender — Si vous n'êtes pas à l'origine de cette candidature, ignorez cet email.
-          </p>
-        </div>
-      </div>
-    `,
-  });
-}
